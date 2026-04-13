@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useDropzone } from 'react-dropzone';
 import { Virtuoso, VirtuosoHandle } from 'react-virtuoso';
+import jschardet from 'jschardet';
 import { saveBookContent, getBookContent, deleteBookContent } from './lib/db';
 import { 
   Book, 
@@ -60,21 +61,49 @@ export default function App() {
       if (file.type === 'text/plain' || file.name.endsWith('.txt')) {
         const reader = new FileReader();
         reader.onload = async () => {
-          const content = reader.result as string;
-          const id = Math.random().toString(36).substr(2, 9);
+          const arrayBuffer = reader.result as ArrayBuffer;
+          const uint8Array = new Uint8Array(arrayBuffer);
           
-          // Save content to IndexedDB
-          await saveBookContent(id, content);
+          // Detect encoding
+          // Convert a small chunk to string for detection
+          const binaryString = Array.from(uint8Array.slice(0, 10000))
+            .map(b => String.fromCharCode(b))
+            .join('');
+          const detection = jschardet.detect(binaryString);
+          const encoding = detection.encoding || 'utf-8';
           
-          const newBook: BookData = {
-            id,
-            name: file.name.replace('.txt', ''),
-            contentSize: content.length,
-            lastPosition: 0
-          };
-          setBooks(prev => [newBook, ...prev]);
+          try {
+            const decoder = new TextDecoder(encoding);
+            const content = decoder.decode(uint8Array);
+            const id = Math.random().toString(36).substr(2, 9);
+            
+            // Save content to IndexedDB
+            await saveBookContent(id, content);
+            
+            const newBook: BookData = {
+              id,
+              name: file.name.replace('.txt', ''),
+              contentSize: content.length,
+              lastPosition: 0
+            };
+            setBooks(prev => [newBook, ...prev]);
+          } catch (error) {
+            console.error('Decoding failed:', error);
+            // Fallback to UTF-8 if detection fails
+            const decoder = new TextDecoder('utf-8');
+            const content = decoder.decode(uint8Array);
+            const id = Math.random().toString(36).substr(2, 9);
+            await saveBookContent(id, content);
+            const newBook: BookData = {
+              id,
+              name: file.name.replace('.txt', ''),
+              contentSize: content.length,
+              lastPosition: 0
+            };
+            setBooks(prev => [newBook, ...prev]);
+          }
         };
-        reader.readAsText(file);
+        reader.readAsArrayBuffer(file);
       }
     });
   }, []);
@@ -200,6 +229,7 @@ function ReaderView({ book, onBack, updatePosition }: {
   const [content, setContent] = useState<string | null>(null);
   const [fontSize, setFontSize] = useState(20);
   const fontSizeRef = useRef(fontSize);
+  const [fontFamily, setFontFamily] = useState<'sans' | 'serif' | 'mono' | 'kaiti'>('serif');
   const [theme, setTheme] = useState<'light' | 'dark' | 'sepia'>('light');
   const [flipMode, setFlipMode] = useState<'scroll' | 'page'>('scroll');
   const [activeParagraphIndex, setActiveParagraphIndex] = useState<number | null>(null);
@@ -400,6 +430,13 @@ function ReaderView({ book, onBack, updatePosition }: {
     sepia: { bg: 'bg-[#f4ecd8]', text: 'text-[#5b4636]', border: 'border-[#d3c6a8]' }
   };
 
+  const fontConfig = {
+    sans: 'font-sans',
+    serif: 'font-serif',
+    mono: 'font-mono',
+    kaiti: 'font-kaiti'
+  };
+
   return (
     <motion.div 
       initial={{ opacity: 0 }}
@@ -487,6 +524,48 @@ function ReaderView({ book, onBack, updatePosition }: {
                       onClick={() => setFlipMode('page')}
                     >
                       整页翻页
+                    </Button>
+                  </div>
+                </div>
+
+                {/* Font Family Selection */}
+                <div className="space-y-4">
+                  <div className="flex items-center gap-2">
+                    <Type className="w-4 h-4" />
+                    <span className="text-sm font-medium">字体样式</span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <Button 
+                      variant={fontFamily === 'sans' ? "default" : "outline"} 
+                      size="sm" 
+                      onClick={() => setFontFamily('sans')}
+                      className="font-sans"
+                    >
+                      黑体
+                    </Button>
+                    <Button 
+                      variant={fontFamily === 'serif' ? "default" : "outline"} 
+                      size="sm" 
+                      onClick={() => setFontFamily('serif')}
+                      className="font-serif"
+                    >
+                      宋体
+                    </Button>
+                    <Button 
+                      variant={fontFamily === 'kaiti' ? "default" : "outline"} 
+                      size="sm" 
+                      onClick={() => setFontFamily('kaiti')}
+                      style={{ fontFamily: 'KaiTi, STKaiti, serif' }}
+                    >
+                      楷体
+                    </Button>
+                    <Button 
+                      variant={fontFamily === 'mono' ? "default" : "outline"} 
+                      size="sm" 
+                      onClick={() => setFontFamily('mono')}
+                      className="font-mono"
+                    >
+                      等宽
                     </Button>
                   </div>
                 </div>
@@ -659,7 +738,8 @@ function ReaderView({ book, onBack, updatePosition }: {
                 <p 
                   id={`p-${idx}`}
                   className={cn(
-                    "max-w-2xl mx-auto font-serif leading-relaxed text-justify transition-all duration-300 rounded-lg px-2 -mx-2",
+                    "max-w-2xl mx-auto leading-relaxed text-justify transition-all duration-300 rounded-lg px-2 -mx-2",
+                    fontConfig[fontFamily],
                     activeParagraphIndex === idx 
                       ? "bg-primary/20 text-primary scale-[1.02] shadow-sm" 
                       : "opacity-100"
