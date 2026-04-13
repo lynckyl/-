@@ -19,7 +19,8 @@ import {
   Timer,
   Sun,
   Moon,
-  Coffee
+  Coffee,
+  List
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Button } from '@/components/ui/button';
@@ -245,6 +246,16 @@ function ReaderView({ book, onBack, updatePosition }: {
     return content.split(/\n+/).filter(p => p.trim().length > 0);
   }, [content]);
 
+  const chapters = useMemo(() => {
+    const chapterRegex = /^\s*(第[一二三四五六七八九十百千万\d]+[章节回].*|Chapter\s+\d+.*|正文\s+.*|序言|前言|后记|番外.*)\s*$/;
+    return paragraphs.reduce((acc, para, index) => {
+      if (chapterRegex.test(para)) {
+        acc.push({ title: para.trim(), index });
+      }
+      return acc;
+    }, [] as { title: string, index: number }[]);
+  }, [paragraphs]);
+
   // Keep fontSizeRef in sync
   useEffect(() => {
     fontSizeRef.current = fontSize;
@@ -454,6 +465,44 @@ function ReaderView({ book, onBack, updatePosition }: {
         </div>
         
         <div className="flex items-center gap-1">
+          <Sheet>
+            <SheetTrigger render={<Button variant="ghost" size="icon" />}>
+              <List className="w-5 h-5" />
+            </SheetTrigger>
+            <SheetContent side="left" className={cn("w-[300px] sm:w-[400px]", themeConfig[theme].bg, themeConfig[theme].text, themeConfig[theme].border)}>
+              <SheetHeader>
+                <SheetTitle className={themeConfig[theme].text}>目录 ({chapters.length})</SheetTitle>
+              </SheetHeader>
+              <div className="mt-6 overflow-y-auto max-h-[calc(100vh-120px)] pr-2 custom-scrollbar">
+                {chapters.length > 0 ? (
+                  <div className="space-y-1">
+                    {chapters.map((chapter, idx) => (
+                      <Button
+                        key={idx}
+                        variant="ghost"
+                        className="w-full justify-start text-left font-normal h-auto py-3 px-4 hover:bg-primary/10"
+                        onClick={() => {
+                          virtuosoRef.current?.scrollToIndex({
+                            index: chapter.index,
+                            align: 'start',
+                            behavior: 'smooth'
+                          });
+                        }}
+                      >
+                        <span className="line-clamp-2">{chapter.title}</span>
+                      </Button>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-center py-10 text-muted-foreground">
+                    <p>未检测到章节标识</p>
+                    <p className="text-xs mt-2">支持“第一章”、“Chapter 1”等格式</p>
+                  </div>
+                )}
+              </div>
+            </SheetContent>
+          </Sheet>
+
           {timeLeft !== null && (
             <div className="flex items-center gap-1 text-xs font-mono text-primary bg-primary/10 px-2 py-1 rounded-full mr-2">
               <Clock className="w-3 h-3" />
@@ -740,6 +789,7 @@ function ReaderView({ book, onBack, updatePosition }: {
                   className={cn(
                     "max-w-2xl mx-auto leading-relaxed text-justify transition-all duration-300 rounded-lg px-2 -mx-2",
                     fontConfig[fontFamily],
+                    chapters.some(c => c.index === idx) ? "font-bold text-xl mt-8 mb-4 border-l-4 border-primary pl-4" : "mb-6",
                     activeParagraphIndex === idx 
                       ? "bg-primary/20 text-primary scale-[1.02] shadow-sm" 
                       : "opacity-100"
