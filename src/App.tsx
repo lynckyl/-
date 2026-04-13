@@ -40,6 +40,7 @@ interface BookData {
   name: string;
   contentSize: number;
   lastPosition: number;
+  lastParagraphIndex: number;
 }
 
 export default function App() {
@@ -85,7 +86,8 @@ export default function App() {
               id,
               name: file.name.replace('.txt', ''),
               contentSize: content.length,
-              lastPosition: 0
+              lastPosition: 0,
+              lastParagraphIndex: 0
             };
             setBooks(prev => [newBook, ...prev]);
           } catch (error) {
@@ -99,7 +101,8 @@ export default function App() {
               id,
               name: file.name.replace('.txt', ''),
               contentSize: content.length,
-              lastPosition: 0
+              lastPosition: 0,
+              lastParagraphIndex: 0
             };
             setBooks(prev => [newBook, ...prev]);
           }
@@ -136,8 +139,8 @@ export default function App() {
             key="reader"
             book={currentBook!} 
             onBack={() => setView('library')} 
-            updatePosition={(pos) => {
-              setBooks(prev => prev.map(b => b.id === currentBookId ? { ...b, lastPosition: pos } : b));
+            updateProgress={(pos, paraIdx) => {
+              setBooks(prev => prev.map(b => b.id === currentBookId ? { ...b, lastPosition: pos, lastParagraphIndex: paraIdx } : b));
             }}
           />
         )}
@@ -221,10 +224,10 @@ function LibraryView({ books, onImport, onOpen, onDelete }: {
   );
 }
 
-function ReaderView({ book, onBack, updatePosition }: { 
+function ReaderView({ book, onBack, updateProgress }: { 
   book: BookData, 
   onBack: () => void,
-  updatePosition: (pos: number) => void,
+  updateProgress: (pos: number, paraIdx: number) => void,
   key?: string
 }) {
   const [content, setContent] = useState<string | null>(null);
@@ -269,12 +272,14 @@ function ReaderView({ book, onBack, updatePosition }: {
   
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const visibleRangeRef = useRef({ startIndex: 0, endIndex: 0 });
   const requestRef = useRef<number | null>(null);
   const lastTimeRef = useRef<{ current: number | null, current_page_flip: number | null }>({ current: null, current_page_flip: null });
   const speedRef = useRef(autoScrollSpeed);
   const flipModeRef = useRef(flipMode);
   const synth = window.speechSynthesis;
   const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
 
   // Keep refs in sync
   useEffect(() => {
@@ -342,6 +347,11 @@ function ReaderView({ book, onBack, updatePosition }: {
       setIsReading(false);
       setActiveParagraphIndex(null);
       activeIndexRef.current = null;
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current.currentTime = 0;
+      }
+      if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'none';
       return;
     }
 
@@ -354,6 +364,14 @@ function ReaderView({ book, onBack, updatePosition }: {
     utterance.rate = readingRateRef.current;
     
     utterance.onend = () => {
+      // Update progress as we read
+      updateProgress(scrollContainerRef.current?.scrollTop || 0, index);
+      
+      // Keep silent audio playing to prevent background suspension
+      if (audioRef.current && audioRef.current.paused) {
+        audioRef.current.play().catch(() => {});
+      }
+      
       setTimeout(() => {
         if (activeIndexRef.current !== null) {
           readNextParagraph(index + 1);
@@ -365,6 +383,8 @@ function ReaderView({ book, onBack, updatePosition }: {
       setIsReading(false);
       setActiveParagraphIndex(null);
       activeIndexRef.current = null;
+      if (audioRef.current) audioRef.current.pause();
+      if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'none';
     };
 
     utteranceRef.current = utterance;
@@ -378,20 +398,63 @@ function ReaderView({ book, onBack, updatePosition }: {
     });
   }, [paragraphs, synth]);
 
-  const toggleReading = () => {
+  const toggleReading = useCallback(() => {
     if (isReading) {
       synth.cancel();
       setIsReading(false);
       setActiveParagraphIndex(null);
       activeIndexRef.current = null;
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current.currentTime = 0;
+      }
+      if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'paused';
     } else {
-      // Find the first visible paragraph to start reading from
-      // With virtuoso, we can just start from the top visible index
-      // But for simplicity, we'll just start from the beginning or a saved index if we had one
-      readNextParagraph(0); 
+      // Start reading from the last saved paragraph or the first visible one
+      const startIndex = isReading ? visibleRangeRef.current.startIndex : (book.lastParagraphIndex || visibleRangeRef.current.startIndex);
+      readNextParagraph(startIndex); 
       setIsReading(true);
+      if (audioRef.current) {
+        audioRef.current.play().catch(e => console.log("Audio play failed:", e));
+      }
+      if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing';
     }
-  };
+  }, [isReading, readNextParagraph, synth]);
+
+  // Media Session Setup
+  useEffect(() => {
+    if ('mediaSession' in navigator) {
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: book.name,
+        artist: '悦读',
+        album: '有声书',
+        artwork: [
+          { src: 'https://picsum.photos/seed/book/512/512', sizes: '512x512', type: 'image/png' }
+        ]
+      });
+
+      navigator.mediaSession.setActionHandler('play', () => {
+        toggleReading();
+      });
+      navigator.mediaSession.setActionHandler('pause', () => {
+        toggleReading();
+      });
+      navigator.mediaSession.setActionHandler('stop', () => {
+        synth.cancel();
+        setIsReading(false);
+        setActiveParagraphIndex(null);
+        activeIndexRef.current = null;
+        if (audioRef.current) audioRef.current.pause();
+        navigator.mediaSession.playbackState = 'none';
+      });
+
+      return () => {
+        navigator.mediaSession.setActionHandler('play', null);
+        navigator.mediaSession.setActionHandler('pause', null);
+        navigator.mediaSession.setActionHandler('stop', null);
+      };
+    }
+  }, [book.name, toggleReading, synth]);
 
   // Sleep Timer Logic
   useEffect(() => {
@@ -417,12 +480,20 @@ function ReaderView({ book, onBack, updatePosition }: {
 
   // Restore position
   useEffect(() => {
-    if (virtuosoRef.current && book.lastPosition > 0) {
-      // Virtuoso scrollTo is better with offset or index
-      // For now we'll just use the raw scroll top if possible
-      setTimeout(() => {
-        virtuosoRef.current?.scrollTo({ top: book.lastPosition });
-      }, 100);
+    if (virtuosoRef.current) {
+      if (book.lastParagraphIndex > 0) {
+        setTimeout(() => {
+          virtuosoRef.current?.scrollToIndex({
+            index: book.lastParagraphIndex,
+            align: 'start',
+            behavior: 'auto'
+          });
+        }, 100);
+      } else if (book.lastPosition > 0) {
+        setTimeout(() => {
+          virtuosoRef.current?.scrollTo({ top: book.lastPosition });
+        }, 100);
+      }
     }
   }, []);
 
@@ -431,7 +502,7 @@ function ReaderView({ book, onBack, updatePosition }: {
   const handleScroll = (scrollTop: number) => {
     if (scrollTimeoutRef.current) window.clearTimeout(scrollTimeoutRef.current);
     scrollTimeoutRef.current = window.setTimeout(() => {
-      updatePosition(scrollTop);
+      updateProgress(scrollTop, visibleRangeRef.current.startIndex);
     }, 500);
   };
 
@@ -781,6 +852,9 @@ function ReaderView({ book, onBack, updatePosition }: {
             ref={virtuosoRef}
             scrollerRef={(el) => (scrollContainerRef.current = el as HTMLDivElement)}
             data={paragraphs}
+            rangeChanged={(range) => {
+              visibleRangeRef.current = range;
+            }}
             onScroll={(e) => handleScroll((e.target as HTMLDivElement).scrollTop)}
             itemContent={(idx, para) => (
               <div className="px-6 py-2 md:px-12 lg:px-24">
@@ -807,6 +881,12 @@ function ReaderView({ book, onBack, updatePosition }: {
 
       {/* Footer Controls */}
       <footer className={cn("h-20 border-t flex items-center justify-center gap-8 px-6 transition-colors duration-300", themeConfig[theme].bg, themeConfig[theme].border)}>
+        {/* Silent audio to keep MediaSession alive */}
+        <audio 
+          ref={audioRef} 
+          loop 
+          src="data:audio/wav;base64,UklGRigAAABXQVZFRm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQQAAAAAAA== "
+        />
         <Button 
           variant={autoScrollSpeed > 0 ? "default" : "outline"} 
           size="lg" 
