@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useDropzone } from 'react-dropzone';
 import { 
   Book, 
@@ -190,7 +190,17 @@ function ReaderView({ book, onBack, updatePosition }: {
   key?: string
 }) {
   const [fontSize, setFontSize] = useState(20);
+  const fontSizeRef = useRef(fontSize);
   const [theme, setTheme] = useState<'light' | 'dark' | 'sepia'>('light');
+  const [activeParagraphIndex, setActiveParagraphIndex] = useState<number | null>(null);
+  const activeIndexRef = useRef<number | null>(null);
+  
+  const paragraphs = useMemo(() => book.content.split(/\n+/).filter(p => p.trim().length > 0), [book.content]);
+
+  // Keep fontSizeRef in sync
+  useEffect(() => {
+    fontSizeRef.current = fontSize;
+  }, [fontSize]);
   const [autoScrollSpeed, setAutoScrollSpeed] = useState(0); // 0 to 100
   const [isReading, setIsReading] = useState(false);
   const [sleepTimer, setSleepTimer] = useState<number | null>(null); // minutes
@@ -212,7 +222,8 @@ function ReaderView({ book, onBack, updatePosition }: {
   const animate = useCallback((time: number) => {
     if (lastTimeRef.current !== null && scrollRef.current) {
       const deltaTime = time - lastTimeRef.current;
-      const pixelsPerSecond = speedRef.current * 2; // Adjust multiplier for speed
+      // Use speedRef.current to ensure we always have the latest speed
+      const pixelsPerSecond = speedRef.current * 2; 
       scrollRef.current.scrollTop += (pixelsPerSecond * deltaTime) / 1000;
     }
     lastTimeRef.current = time;
@@ -222,7 +233,7 @@ function ReaderView({ book, onBack, updatePosition }: {
   useEffect(() => {
     if (autoScrollSpeed > 0) {
       if (requestRef.current === null) {
-        lastTimeRef.current = null; // Reset time on start
+        lastTimeRef.current = null;
         requestRef.current = requestAnimationFrame(animate);
       }
     } else {
@@ -238,23 +249,70 @@ function ReaderView({ book, onBack, updatePosition }: {
         requestRef.current = null;
       }
     };
-  }, [autoScrollSpeed > 0, animate]);
+  }, [autoScrollSpeed, animate]);
 
   // TTS Logic
+  const readNextParagraph = useCallback((index: number) => {
+    if (index >= paragraphs.length) {
+      setIsReading(false);
+      setActiveParagraphIndex(null);
+      activeIndexRef.current = null;
+      return;
+    }
+
+    setActiveParagraphIndex(index);
+    activeIndexRef.current = index;
+    
+    const text = paragraphs[index];
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = 'zh-CN';
+    utterance.rate = 1.0;
+    
+    utterance.onend = () => {
+      // Small delay between paragraphs for natural feel
+      setTimeout(() => {
+        if (activeIndexRef.current !== null) {
+          readNextParagraph(index + 1);
+        }
+      }, 300);
+    };
+
+    utterance.onerror = () => {
+      setIsReading(false);
+      setActiveParagraphIndex(null);
+      activeIndexRef.current = null;
+    };
+
+    utteranceRef.current = utterance;
+    synth.speak(utterance);
+
+    // Scroll active paragraph into view
+    const element = document.getElementById(`p-${index}`);
+    if (element) {
+      element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  }, [paragraphs, synth]);
+
   const toggleReading = () => {
     if (isReading) {
       synth.cancel();
       setIsReading(false);
+      setActiveParagraphIndex(null);
+      activeIndexRef.current = null;
     } else {
-      // Get text from current scroll position
-      if (!scrollRef.current) return;
-      const text = book.content;
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.lang = 'zh-CN';
-      utterance.rate = 1.0;
-      utterance.onend = () => setIsReading(false);
-      utteranceRef.current = utterance;
-      synth.speak(utterance);
+      // Find the first visible paragraph to start reading from
+      let startIndex = 0;
+      if (scrollRef.current) {
+        const containerTop = scrollRef.current.scrollTop;
+        for (let i = 0; i < paragraphs.length; i++) {
+          const el = document.getElementById(`p-${i}`);
+          if (el && el.offsetTop >= containerTop) {
+            startIndex = i;
+            break;
+          }
+        }
+      }
+      readNextParagraph(startIndex);
       setIsReading(true);
     }
   };
@@ -288,10 +346,15 @@ function ReaderView({ book, onBack, updatePosition }: {
     }
   }, []);
 
-  // Save position on scroll
+  // Save position on scroll (debounced)
+  const scrollTimeoutRef = useRef<number | null>(null);
   const handleScroll = () => {
     if (scrollRef.current) {
-      updatePosition(scrollRef.current.scrollTop);
+      const pos = scrollRef.current.scrollTop;
+      if (scrollTimeoutRef.current) window.clearTimeout(scrollTimeoutRef.current);
+      scrollTimeoutRef.current = window.setTimeout(() => {
+        updatePosition(pos);
+      }, 500);
     }
   };
 
@@ -375,7 +438,25 @@ function ReaderView({ book, onBack, updatePosition }: {
                       <Type className="w-4 h-4" />
                       <span className="text-sm font-medium">字体大小</span>
                     </div>
-                    <span className="text-sm text-muted-foreground">{fontSize}px</span>
+                    <div className="flex items-center gap-2">
+                      <Button 
+                        variant="outline" 
+                        size="icon" 
+                        className="h-8 w-8"
+                        onClick={() => setFontSize(prev => Math.max(12, prev - 2))}
+                      >
+                        -
+                      </Button>
+                      <span className="text-sm font-mono w-8 text-center">{fontSize}</span>
+                      <Button 
+                        variant="outline" 
+                        size="icon" 
+                        className="h-8 w-8"
+                        onClick={() => setFontSize(prev => Math.min(40, prev + 2))}
+                      >
+                        +
+                      </Button>
+                    </div>
                   </div>
                   <Slider 
                     value={[fontSize]} 
@@ -393,7 +474,25 @@ function ReaderView({ book, onBack, updatePosition }: {
                       <FastForward className="w-4 h-4" />
                       <span className="text-sm font-medium">自动翻页速度</span>
                     </div>
-                    <span className="text-sm text-muted-foreground">{autoScrollSpeed}</span>
+                    <div className="flex items-center gap-2">
+                      <Button 
+                        variant="outline" 
+                        size="icon" 
+                        className="h-8 w-8"
+                        onClick={() => setAutoScrollSpeed(prev => Math.max(0, prev - 5))}
+                      >
+                        -
+                      </Button>
+                      <span className="text-sm font-mono w-8 text-center">{autoScrollSpeed}</span>
+                      <Button 
+                        variant="outline" 
+                        size="icon" 
+                        className="h-8 w-8"
+                        onClick={() => setAutoScrollSpeed(prev => Math.min(100, prev + 5))}
+                      >
+                        +
+                      </Button>
+                    </div>
                   </div>
                   <Slider 
                     value={[autoScrollSpeed]} 
@@ -444,13 +543,26 @@ function ReaderView({ book, onBack, updatePosition }: {
       <div 
         ref={scrollRef}
         onScroll={handleScroll}
-        className="flex-1 overflow-y-auto px-6 py-8 md:px-12 lg:px-24 scroll-smooth"
+        className="flex-1 overflow-y-auto px-6 py-8 md:px-12 lg:px-24"
       >
         <div 
-          className="max-w-2xl mx-auto font-serif leading-relaxed whitespace-pre-wrap text-justify transition-all duration-200"
-          style={{ fontSize: `${fontSize}px` }}
+          className="max-w-2xl mx-auto font-serif leading-relaxed text-justify transition-[font-size] duration-200"
+          style={{ fontSize: `${fontSize}px`, lineHeight: '1.8' }}
         >
-          {book.content}
+          {paragraphs.map((para, idx) => (
+            <p 
+              key={idx} 
+              id={`p-${idx}`}
+              className={cn(
+                "mb-6 transition-all duration-300 rounded-lg px-2 -mx-2",
+                activeParagraphIndex === idx 
+                  ? "bg-primary/20 text-primary scale-[1.02] shadow-sm" 
+                  : "opacity-100"
+              )}
+            >
+              {para}
+            </p>
+          ))}
         </div>
       </div>
 
