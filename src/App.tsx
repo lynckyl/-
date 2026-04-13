@@ -1,0 +1,435 @@
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { useDropzone } from 'react-dropzone';
+import { 
+  Book, 
+  Upload, 
+  Play, 
+  Pause, 
+  Settings, 
+  Volume2, 
+  VolumeX, 
+  Clock, 
+  ChevronLeft, 
+  Trash2,
+  Type,
+  FastForward,
+  Timer
+} from 'lucide-react';
+import { motion, AnimatePresence } from 'motion/react';
+import { Button } from '@/components/ui/button';
+import { Slider } from '@/components/ui/slider';
+import { Card } from '@/components/ui/card';
+import { 
+  Sheet, 
+  SheetContent, 
+  SheetHeader, 
+  SheetTitle, 
+  SheetTrigger 
+} from '@/components/ui/sheet';
+import { cn } from '@/lib/utils';
+
+interface BookData {
+  id: string;
+  name: string;
+  content: string;
+  lastPosition: number;
+}
+
+export default function App() {
+  const [books, setBooks] = useState<BookData[]>(() => {
+    const saved = localStorage.getItem('yuedu_books');
+    return saved ? JSON.parse(saved) : [];
+  });
+  const [currentBookId, setCurrentBookId] = useState<string | null>(null);
+  const [view, setView] = useState<'library' | 'reader'>('library');
+
+  // Persistence
+  useEffect(() => {
+    localStorage.setItem('yuedu_books', JSON.stringify(books));
+  }, [books]);
+
+  const currentBook = books.find(b => b.id === currentBookId);
+
+  const handleImport = useCallback((acceptedFiles: File[]) => {
+    acceptedFiles.forEach(file => {
+      if (file.type === 'text/plain' || file.name.endsWith('.txt')) {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const content = reader.result as string;
+          const newBook: BookData = {
+            id: Math.random().toString(36).substr(2, 9),
+            name: file.name.replace('.txt', ''),
+            content,
+            lastPosition: 0
+          };
+          setBooks(prev => [newBook, ...prev]);
+        };
+        reader.readAsText(file);
+      }
+    });
+  }, []);
+
+  const deleteBook = (id: string) => {
+    setBooks(prev => prev.filter(b => b.id !== id));
+    if (currentBookId === id) setCurrentBookId(null);
+  };
+
+  const openBook = (id: string) => {
+    setCurrentBookId(id);
+    setView('reader');
+  };
+
+  return (
+    <div className="min-h-screen bg-background text-foreground selection:bg-primary/20">
+      <AnimatePresence mode="wait">
+        {view === 'library' ? (
+          <LibraryView 
+            key="library"
+            books={books} 
+            onImport={handleImport} 
+            onOpen={openBook} 
+            onDelete={deleteBook}
+          />
+        ) : (
+          <ReaderView 
+            key="reader"
+            book={currentBook!} 
+            onBack={() => setView('library')} 
+            updatePosition={(pos) => {
+              setBooks(prev => prev.map(b => b.id === currentBookId ? { ...b, lastPosition: pos } : b));
+            }}
+          />
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
+function LibraryView({ books, onImport, onOpen, onDelete }: { 
+  books: BookData[], 
+  onImport: (files: File[]) => void,
+  onOpen: (id: string) => void,
+  onDelete: (id: string) => void,
+  key?: string
+}) {
+  const { getRootProps, getInputProps, isDragActive } = useDropzone({ 
+    onDrop: onImport,
+    accept: { 'text/plain': ['.txt'] }
+  } as any);
+
+  return (
+    <motion.div 
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -20 }}
+      className="max-w-4xl mx-auto p-6 pt-12"
+    >
+      <header className="mb-12 text-center">
+        <h1 className="text-4xl font-serif font-bold mb-2 text-primary">悦读</h1>
+        <p className="text-muted-foreground italic">极简、纯粹的阅读体验</p>
+      </header>
+
+      <div 
+        {...getRootProps()} 
+        className={cn(
+          "border-2 border-dashed rounded-2xl p-12 text-center transition-all cursor-pointer mb-8",
+          isDragActive ? "border-primary bg-primary/5 scale-[1.02]" : "border-muted-foreground/20 hover:border-primary/50"
+        )}
+      >
+        <input {...getInputProps()} />
+        <Upload className="w-12 h-12 mx-auto mb-4 text-muted-foreground" />
+        <p className="text-lg font-medium">点击或拖拽 TXT 文件到此处</p>
+        <p className="text-sm text-muted-foreground mt-1">支持 Android & iOS 导入</p>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        {books.map(book => (
+          <Card key={book.id} className="p-4 flex items-center justify-between group hover:shadow-md transition-shadow">
+            <div 
+              className="flex items-center gap-4 cursor-pointer flex-1"
+              onClick={() => onOpen(book.id)}
+            >
+              <div className="w-10 h-10 rounded-lg bg-secondary flex items-center justify-center text-secondary-foreground">
+                <Book className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="font-medium line-clamp-1">{book.name}</h3>
+                <p className="text-xs text-muted-foreground">
+                  {Math.round(book.content.length / 1000)}k 字
+                </p>
+              </div>
+            </div>
+            <Button 
+              variant="ghost" 
+              size="icon" 
+              className="opacity-0 group-hover:opacity-100 text-destructive hover:text-destructive hover:bg-destructive/10 transition-all"
+              onClick={() => onDelete(book.id)}
+            >
+              <Trash2 className="w-4 h-4" />
+            </Button>
+          </Card>
+        ))}
+      </div>
+
+      {books.length === 0 && (
+        <div className="text-center py-20 text-muted-foreground">
+          <p>书架空空如也，快去导入一本好书吧</p>
+        </div>
+      )}
+    </motion.div>
+  );
+}
+
+function ReaderView({ book, onBack, updatePosition }: { 
+  book: BookData, 
+  onBack: () => void,
+  updatePosition: (pos: number) => void,
+  key?: string
+}) {
+  const [fontSize, setFontSize] = useState(20);
+  const [autoScrollSpeed, setAutoScrollSpeed] = useState(0); // 0 to 100
+  const [isReading, setIsReading] = useState(false);
+  const [sleepTimer, setSleepTimer] = useState<number | null>(null); // minutes
+  const [timeLeft, setTimeLeft] = useState<number | null>(null); // seconds
+  
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const requestRef = useRef<number | null>(null);
+  const lastTimeRef = useRef<number | null>(null);
+  const speedRef = useRef(autoScrollSpeed);
+  const synth = window.speechSynthesis;
+  const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
+
+  // Keep speedRef in sync
+  useEffect(() => {
+    speedRef.current = autoScrollSpeed;
+  }, [autoScrollSpeed]);
+
+  // Auto Scroll Logic
+  const animate = useCallback((time: number) => {
+    if (lastTimeRef.current !== null && scrollRef.current) {
+      const deltaTime = time - lastTimeRef.current;
+      const pixelsPerSecond = speedRef.current * 2; // Adjust multiplier for speed
+      scrollRef.current.scrollTop += (pixelsPerSecond * deltaTime) / 1000;
+    }
+    lastTimeRef.current = time;
+    requestRef.current = requestAnimationFrame(animate);
+  }, []);
+
+  useEffect(() => {
+    if (autoScrollSpeed > 0) {
+      if (requestRef.current === null) {
+        lastTimeRef.current = null; // Reset time on start
+        requestRef.current = requestAnimationFrame(animate);
+      }
+    } else {
+      if (requestRef.current !== null) {
+        cancelAnimationFrame(requestRef.current);
+        requestRef.current = null;
+      }
+      lastTimeRef.current = null;
+    }
+    return () => {
+      if (requestRef.current !== null) {
+        cancelAnimationFrame(requestRef.current);
+        requestRef.current = null;
+      }
+    };
+  }, [autoScrollSpeed > 0, animate]);
+
+  // TTS Logic
+  const toggleReading = () => {
+    if (isReading) {
+      synth.cancel();
+      setIsReading(false);
+    } else {
+      // Get text from current scroll position
+      if (!scrollRef.current) return;
+      const text = book.content;
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.lang = 'zh-CN';
+      utterance.rate = 1.0;
+      utterance.onend = () => setIsReading(false);
+      utteranceRef.current = utterance;
+      synth.speak(utterance);
+      setIsReading(true);
+    }
+  };
+
+  // Sleep Timer Logic
+  useEffect(() => {
+    let interval: any;
+    if (timeLeft !== null && timeLeft > 0) {
+      interval = setInterval(() => {
+        setTimeLeft(prev => (prev !== null ? prev - 1 : null));
+      }, 1000);
+    } else if (timeLeft === 0) {
+      synth.cancel();
+      setIsReading(false);
+      setAutoScrollSpeed(0);
+      setTimeLeft(null);
+      setSleepTimer(null);
+    }
+    return () => clearInterval(interval);
+  }, [timeLeft, synth]);
+
+  const startTimer = (mins: number) => {
+    setSleepTimer(mins);
+    setTimeLeft(mins * 60);
+  };
+
+  // Restore position
+  useEffect(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = book.lastPosition;
+    }
+  }, []);
+
+  // Save position on scroll
+  const handleScroll = () => {
+    if (scrollRef.current) {
+      updatePosition(scrollRef.current.scrollTop);
+    }
+  };
+
+  return (
+    <motion.div 
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 flex flex-col bg-background"
+    >
+      {/* Header */}
+      <header className="h-14 border-b flex items-center justify-between px-4 bg-background/80 backdrop-blur-md z-10">
+        <div className="flex items-center gap-2">
+          <Button variant="ghost" size="icon" onClick={onBack}>
+            <ChevronLeft className="w-5 h-5" />
+          </Button>
+          <h2 className="font-medium line-clamp-1 max-w-[200px]">{book.name}</h2>
+        </div>
+        
+        <div className="flex items-center gap-1">
+          {timeLeft !== null && (
+            <div className="flex items-center gap-1 text-xs font-mono text-primary bg-primary/10 px-2 py-1 rounded-full mr-2">
+              <Clock className="w-3 h-3" />
+              {Math.floor(timeLeft / 60)}:{(timeLeft % 60).toString().padStart(2, '0')}
+            </div>
+          )}
+          
+          <Sheet>
+            <SheetTrigger render={<Button variant="ghost" size="icon" />}>
+              <Settings className="w-5 h-5" />
+            </SheetTrigger>
+            <SheetContent>
+              <SheetHeader>
+                <SheetTitle>阅读设置</SheetTitle>
+              </SheetHeader>
+              <div className="py-6 space-y-8">
+                {/* Font Size */}
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Type className="w-4 h-4" />
+                      <span className="text-sm font-medium">字体大小</span>
+                    </div>
+                    <span className="text-sm text-muted-foreground">{fontSize}px</span>
+                  </div>
+                  <Slider 
+                    value={[fontSize]} 
+                    min={12} 
+                    max={40} 
+                    step={1} 
+                    onValueChange={(v: number[]) => setFontSize(v[0])} 
+                  />
+                </div>
+
+                {/* Auto Scroll Speed */}
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <FastForward className="w-4 h-4" />
+                      <span className="text-sm font-medium">自动翻页速度</span>
+                    </div>
+                    <span className="text-sm text-muted-foreground">{autoScrollSpeed}</span>
+                  </div>
+                  <Slider 
+                    value={[autoScrollSpeed]} 
+                    min={0} 
+                    max={100} 
+                    step={1} 
+                    onValueChange={(v: number[]) => setAutoScrollSpeed(v[0])} 
+                  />
+                </div>
+
+                {/* Sleep Timer */}
+                <div className="space-y-4">
+                  <div className="flex items-center gap-2">
+                    <Timer className="w-4 h-4" />
+                    <span className="text-sm font-medium">定时停止</span>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2">
+                    {[15, 30, 60].map(mins => (
+                      <Button 
+                        key={mins}
+                        variant={sleepTimer === mins ? "default" : "outline"}
+                        size="sm"
+                        onClick={() => startTimer(mins)}
+                      >
+                        {mins} 分钟
+                      </Button>
+                    ))}
+                    <Button 
+                      variant="outline" 
+                      size="sm" 
+                      className="col-span-3"
+                      onClick={() => {
+                        setSleepTimer(null);
+                        setTimeLeft(null);
+                      }}
+                    >
+                      取消定时
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            </SheetContent>
+          </Sheet>
+        </div>
+      </header>
+
+      {/* Content */}
+      <div 
+        ref={scrollRef}
+        onScroll={handleScroll}
+        className="flex-1 overflow-y-auto px-6 py-8 md:px-12 lg:px-24 scroll-smooth"
+        style={{ fontSize: `${fontSize}px` }}
+      >
+        <div className="max-w-2xl mx-auto font-serif leading-relaxed whitespace-pre-wrap text-justify">
+          {book.content}
+        </div>
+      </div>
+
+      {/* Footer Controls */}
+      <footer className="h-20 border-t bg-background/80 backdrop-blur-md flex items-center justify-center gap-8 px-6">
+        <Button 
+          variant={autoScrollSpeed > 0 ? "default" : "outline"} 
+          size="lg" 
+          className="rounded-full gap-2"
+          onClick={() => setAutoScrollSpeed(prev => prev > 0 ? 0 : 20)}
+        >
+          {autoScrollSpeed > 0 ? <Pause className="w-5 h-5" /> : <Play className="w-5 h-5" />}
+          {autoScrollSpeed > 0 ? "停止翻页" : "自动翻页"}
+        </Button>
+
+        <Button 
+          variant={isReading ? "default" : "outline"} 
+          size="lg" 
+          className="rounded-full gap-2"
+          onClick={toggleReading}
+        >
+          {isReading ? <VolumeX className="w-5 h-5" /> : <Volume2 className="w-5 h-5" />}
+          {isReading ? "停止朗读" : "有声朗读"}
+        </Button>
+      </footer>
+    </motion.div>
+  );
+}

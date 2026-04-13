@@ -1,0 +1,5 @@
+{
+  "name": "悦读 (YueDu) - 极简电子书阅读器",
+  "description": "一个支持TXT导入、自动翻页、有声朗读及定时关闭的极简电子书阅读器。",
+  "requestFramePermissions": []
+}
