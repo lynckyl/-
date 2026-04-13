@@ -13,7 +13,10 @@ import {
   Trash2,
   Type,
   FastForward,
-  Timer
+  Timer,
+  Sun,
+  Moon,
+  Coffee
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Button } from '@/components/ui/button';
@@ -187,6 +190,7 @@ function ReaderView({ book, onBack, updatePosition }: {
   key?: string
 }) {
   const [fontSize, setFontSize] = useState(20);
+  const [theme, setTheme] = useState<'light' | 'dark' | 'sepia'>('light');
   const [autoScrollSpeed, setAutoScrollSpeed] = useState(0); // 0 to 100
   const [isReading, setIsReading] = useState(false);
   const [sleepTimer, setSleepTimer] = useState<number | null>(null); // minutes
@@ -291,17 +295,23 @@ function ReaderView({ book, onBack, updatePosition }: {
     }
   };
 
+  const themeConfig = {
+    light: { bg: 'bg-[#fdfcf8]', text: 'text-[#1c1917]', border: 'border-[#e7e5e4]' },
+    dark: { bg: 'bg-[#121212]', text: 'text-[#e0e0e0]', border: 'border-[#333333]' },
+    sepia: { bg: 'bg-[#f4ecd8]', text: 'text-[#5b4636]', border: 'border-[#d3c6a8]' }
+  };
+
   return (
     <motion.div 
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      className="fixed inset-0 flex flex-col bg-background"
+      className={cn("fixed inset-0 flex flex-col transition-colors duration-300", themeConfig[theme].bg, themeConfig[theme].text)}
     >
       {/* Header */}
-      <header className="h-14 border-b flex items-center justify-between px-4 bg-background/80 backdrop-blur-md z-10">
+      <header className={cn("h-14 border-b flex items-center justify-between px-4 backdrop-blur-md z-10 transition-colors duration-300", themeConfig[theme].bg, themeConfig[theme].border)}>
         <div className="flex items-center gap-2">
-          <Button variant="ghost" size="icon" onClick={onBack}>
+          <Button variant="ghost" size="icon" onClick={onBack} className={themeConfig[theme].text}>
             <ChevronLeft className="w-5 h-5" />
           </Button>
           <h2 className="font-medium line-clamp-1 max-w-[200px]">{book.name}</h2>
@@ -319,11 +329,45 @@ function ReaderView({ book, onBack, updatePosition }: {
             <SheetTrigger render={<Button variant="ghost" size="icon" />}>
               <Settings className="w-5 h-5" />
             </SheetTrigger>
-            <SheetContent>
+            <SheetContent className={cn(themeConfig[theme].bg, themeConfig[theme].text, themeConfig[theme].border)}>
               <SheetHeader>
-                <SheetTitle>阅读设置</SheetTitle>
+                <SheetTitle className={themeConfig[theme].text}>阅读设置</SheetTitle>
               </SheetHeader>
               <div className="py-6 space-y-8">
+                {/* Theme Selection */}
+                <div className="space-y-4">
+                  <div className="flex items-center gap-2">
+                    <Sun className="w-4 h-4" />
+                    <span className="text-sm font-medium">阅读模式</span>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2">
+                    <Button 
+                      variant={theme === 'light' ? "default" : "outline"} 
+                      size="sm" 
+                      className="gap-2"
+                      onClick={() => setTheme('light')}
+                    >
+                      <Sun className="w-4 h-4" /> 白天
+                    </Button>
+                    <Button 
+                      variant={theme === 'dark' ? "default" : "outline"} 
+                      size="sm" 
+                      className="gap-2"
+                      onClick={() => setTheme('dark')}
+                    >
+                      <Moon className="w-4 h-4" /> 黑夜
+                    </Button>
+                    <Button 
+                      variant={theme === 'sepia' ? "default" : "outline"} 
+                      size="sm" 
+                      className="gap-2"
+                      onClick={() => setTheme('sepia')}
+                    >
+                      <Coffee className="w-4 h-4" /> 护眼
+                    </Button>
+                  </div>
+                </div>
+
                 {/* Font Size */}
                 <div className="space-y-4">
                   <div className="flex items-center justify-between">
@@ -401,15 +445,17 @@ function ReaderView({ book, onBack, updatePosition }: {
         ref={scrollRef}
         onScroll={handleScroll}
         className="flex-1 overflow-y-auto px-6 py-8 md:px-12 lg:px-24 scroll-smooth"
-        style={{ fontSize: `${fontSize}px` }}
       >
-        <div className="max-w-2xl mx-auto font-serif leading-relaxed whitespace-pre-wrap text-justify">
+        <div 
+          className="max-w-2xl mx-auto font-serif leading-relaxed whitespace-pre-wrap text-justify transition-all duration-200"
+          style={{ fontSize: `${fontSize}px` }}
+        >
           {book.content}
         </div>
       </div>
 
       {/* Footer Controls */}
-      <footer className="h-20 border-t bg-background/80 backdrop-blur-md flex items-center justify-center gap-8 px-6">
+      <footer className={cn("h-20 border-t flex items-center justify-center gap-8 px-6 transition-colors duration-300", themeConfig[theme].bg, themeConfig[theme].border)}>
         <Button 
           variant={autoScrollSpeed > 0 ? "default" : "outline"} 
           size="lg" 
