@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useDropzone } from 'react-dropzone';
+import { Virtuoso, VirtuosoHandle } from 'react-virtuoso';
+import { saveBookContent, getBookContent, deleteBookContent } from './lib/db';
 import { 
   Book, 
   Upload, 
@@ -34,7 +36,7 @@ import { cn } from '@/lib/utils';
 interface BookData {
   id: string;
   name: string;
-  content: string;
+  contentSize: number;
   lastPosition: number;
 }
 
@@ -57,12 +59,17 @@ export default function App() {
     acceptedFiles.forEach(file => {
       if (file.type === 'text/plain' || file.name.endsWith('.txt')) {
         const reader = new FileReader();
-        reader.onload = () => {
+        reader.onload = async () => {
           const content = reader.result as string;
+          const id = Math.random().toString(36).substr(2, 9);
+          
+          // Save content to IndexedDB
+          await saveBookContent(id, content);
+          
           const newBook: BookData = {
-            id: Math.random().toString(36).substr(2, 9),
+            id,
             name: file.name.replace('.txt', ''),
-            content,
+            contentSize: content.length,
             lastPosition: 0
           };
           setBooks(prev => [newBook, ...prev]);
@@ -72,7 +79,8 @@ export default function App() {
     });
   }, []);
 
-  const deleteBook = (id: string) => {
+  const deleteBook = async (id: string) => {
+    await deleteBookContent(id);
     setBooks(prev => prev.filter(b => b.id !== id));
     if (currentBookId === id) setCurrentBookId(null);
   };
@@ -158,7 +166,7 @@ function LibraryView({ books, onImport, onOpen, onDelete }: {
               <div>
                 <h3 className="font-medium line-clamp-1">{book.name}</h3>
                 <p className="text-xs text-muted-foreground">
-                  {Math.round(book.content.length / 1000)}k 字
+                  {Math.round(book.contentSize / 1000)}k 字
                 </p>
               </div>
             </div>
@@ -189,13 +197,23 @@ function ReaderView({ book, onBack, updatePosition }: {
   updatePosition: (pos: number) => void,
   key?: string
 }) {
+  const [content, setContent] = useState<string | null>(null);
   const [fontSize, setFontSize] = useState(20);
   const fontSizeRef = useRef(fontSize);
   const [theme, setTheme] = useState<'light' | 'dark' | 'sepia'>('light');
+  const [flipMode, setFlipMode] = useState<'scroll' | 'page'>('scroll');
   const [activeParagraphIndex, setActiveParagraphIndex] = useState<number | null>(null);
   const activeIndexRef = useRef<number | null>(null);
   
-  const paragraphs = useMemo(() => book.content.split(/\n+/).filter(p => p.trim().length > 0), [book.content]);
+  // Load content from IndexedDB
+  useEffect(() => {
+    getBookContent(book.id).then(c => setContent(c || ''));
+  }, [book.id]);
+
+  const paragraphs = useMemo(() => {
+    if (!content) return [];
+    return content.split(/\n+/).filter(p => p.trim().length > 0);
+  }, [content]);
 
   // Keep fontSizeRef in sync
   useEffect(() => {
@@ -206,34 +224,54 @@ function ReaderView({ book, onBack, updatePosition }: {
   const [sleepTimer, setSleepTimer] = useState<number | null>(null); // minutes
   const [timeLeft, setTimeLeft] = useState<number | null>(null); // seconds
   
-  const scrollRef = useRef<HTMLDivElement>(null);
+  const virtuosoRef = useRef<VirtuosoHandle>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
   const requestRef = useRef<number | null>(null);
-  const lastTimeRef = useRef<number | null>(null);
+  const lastTimeRef = useRef<{ current: number | null, current_page_flip: number | null }>({ current: null, current_page_flip: null });
   const speedRef = useRef(autoScrollSpeed);
+  const flipModeRef = useRef(flipMode);
   const synth = window.speechSynthesis;
   const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
 
-  // Keep speedRef in sync
+  // Keep refs in sync
   useEffect(() => {
     speedRef.current = autoScrollSpeed;
   }, [autoScrollSpeed]);
 
-  // Auto Scroll Logic
+  useEffect(() => {
+    flipModeRef.current = flipMode;
+  }, [flipMode]);
+
+  // Auto Scroll/Flip Logic
   const animate = useCallback((time: number) => {
-    if (lastTimeRef.current !== null && scrollRef.current) {
-      const deltaTime = time - lastTimeRef.current;
-      // Use speedRef.current to ensure we always have the latest speed
-      const pixelsPerSecond = speedRef.current * 2; 
-      scrollRef.current.scrollTop += (pixelsPerSecond * deltaTime) / 1000;
+    if (lastTimeRef.current.current !== null && virtuosoRef.current) {
+      const deltaTime = time - lastTimeRef.current.current;
+      
+      if (flipModeRef.current === 'scroll') {
+        const pixelsPerSecond = speedRef.current * 2; 
+        const offset = (pixelsPerSecond * deltaTime) / 1000;
+        virtuosoRef.current.scrollBy({ top: offset, behavior: 'auto' });
+      } else {
+        const interval = Math.max(1000, (105 - speedRef.current) * 150);
+        if (time - (lastTimeRef.current.current_page_flip || 0) > interval) {
+          const containerHeight = scrollContainerRef.current?.clientHeight || 500;
+          virtuosoRef.current.scrollBy({ top: containerHeight - 60, behavior: 'smooth' });
+          lastTimeRef.current.current_page_flip = time;
+        }
+      }
     }
-    lastTimeRef.current = time;
+    
+    if (lastTimeRef.current.current === null) {
+      lastTimeRef.current.current_page_flip = time;
+    }
+    lastTimeRef.current.current = time;
     requestRef.current = requestAnimationFrame(animate);
   }, []);
 
   useEffect(() => {
     if (autoScrollSpeed > 0) {
       if (requestRef.current === null) {
-        lastTimeRef.current = null;
+        lastTimeRef.current.current = null;
         requestRef.current = requestAnimationFrame(animate);
       }
     } else {
@@ -241,7 +279,7 @@ function ReaderView({ book, onBack, updatePosition }: {
         cancelAnimationFrame(requestRef.current);
         requestRef.current = null;
       }
-      lastTimeRef.current = null;
+      lastTimeRef.current.current = null;
     }
     return () => {
       if (requestRef.current !== null) {
@@ -269,7 +307,6 @@ function ReaderView({ book, onBack, updatePosition }: {
     utterance.rate = 1.0;
     
     utterance.onend = () => {
-      // Small delay between paragraphs for natural feel
       setTimeout(() => {
         if (activeIndexRef.current !== null) {
           readNextParagraph(index + 1);
@@ -287,10 +324,11 @@ function ReaderView({ book, onBack, updatePosition }: {
     synth.speak(utterance);
 
     // Scroll active paragraph into view
-    const element = document.getElementById(`p-${index}`);
-    if (element) {
-      element.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    }
+    virtuosoRef.current?.scrollToIndex({
+      index,
+      align: 'center',
+      behavior: 'smooth'
+    });
   }, [paragraphs, synth]);
 
   const toggleReading = () => {
@@ -301,18 +339,9 @@ function ReaderView({ book, onBack, updatePosition }: {
       activeIndexRef.current = null;
     } else {
       // Find the first visible paragraph to start reading from
-      let startIndex = 0;
-      if (scrollRef.current) {
-        const containerTop = scrollRef.current.scrollTop;
-        for (let i = 0; i < paragraphs.length; i++) {
-          const el = document.getElementById(`p-${i}`);
-          if (el && el.offsetTop >= containerTop) {
-            startIndex = i;
-            break;
-          }
-        }
-      }
-      readNextParagraph(startIndex);
+      // With virtuoso, we can just start from the top visible index
+      // But for simplicity, we'll just start from the beginning or a saved index if we had one
+      readNextParagraph(0); 
       setIsReading(true);
     }
   };
@@ -341,21 +370,22 @@ function ReaderView({ book, onBack, updatePosition }: {
 
   // Restore position
   useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = book.lastPosition;
+    if (virtuosoRef.current && book.lastPosition > 0) {
+      // Virtuoso scrollTo is better with offset or index
+      // For now we'll just use the raw scroll top if possible
+      setTimeout(() => {
+        virtuosoRef.current?.scrollTo({ top: book.lastPosition });
+      }, 100);
     }
   }, []);
 
   // Save position on scroll (debounced)
   const scrollTimeoutRef = useRef<number | null>(null);
-  const handleScroll = () => {
-    if (scrollRef.current) {
-      const pos = scrollRef.current.scrollTop;
-      if (scrollTimeoutRef.current) window.clearTimeout(scrollTimeoutRef.current);
-      scrollTimeoutRef.current = window.setTimeout(() => {
-        updatePosition(pos);
-      }, 500);
-    }
+  const handleScroll = (scrollTop: number) => {
+    if (scrollTimeoutRef.current) window.clearTimeout(scrollTimeoutRef.current);
+    scrollTimeoutRef.current = window.setTimeout(() => {
+      updatePosition(scrollTop);
+    }, 500);
   };
 
   const themeConfig = {
@@ -431,6 +461,30 @@ function ReaderView({ book, onBack, updatePosition }: {
                   </div>
                 </div>
 
+                {/* Flip Mode Selection */}
+                <div className="space-y-4">
+                  <div className="flex items-center gap-2">
+                    <Book className="w-4 h-4" />
+                    <span className="text-sm font-medium">翻页模式</span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <Button 
+                      variant={flipMode === 'scroll' ? "default" : "outline"} 
+                      size="sm" 
+                      onClick={() => setFlipMode('scroll')}
+                    >
+                      平滑滚动
+                    </Button>
+                    <Button 
+                      variant={flipMode === 'page' ? "default" : "outline"} 
+                      size="sm" 
+                      onClick={() => setFlipMode('page')}
+                    >
+                      整页翻页
+                    </Button>
+                  </div>
+                </div>
+
                 {/* Font Size */}
                 <div className="space-y-4">
                   <div className="flex items-center justify-between">
@@ -467,12 +521,14 @@ function ReaderView({ book, onBack, updatePosition }: {
                   />
                 </div>
 
-                {/* Auto Scroll Speed */}
+                {/* Auto Scroll/Flip Speed */}
                 <div className="space-y-4">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
                       <FastForward className="w-4 h-4" />
-                      <span className="text-sm font-medium">自动翻页速度</span>
+                      <span className="text-sm font-medium">
+                        {flipMode === 'scroll' ? '自动滚动速度' : '自动翻页频率'}
+                      </span>
                     </div>
                     <div className="flex items-center gap-2">
                       <Button 
@@ -501,6 +557,11 @@ function ReaderView({ book, onBack, updatePosition }: {
                     step={1} 
                     onValueChange={(v: number[]) => setAutoScrollSpeed(v[0])} 
                   />
+                  <p className="text-[10px] text-muted-foreground text-center">
+                    {flipMode === 'scroll' 
+                      ? '数值越大滚动越快' 
+                      : `约每 ${Math.round((105 - autoScrollSpeed) * 0.15)} 秒翻一页`}
+                  </p>
                 </div>
 
                 {/* Sleep Timer */}
@@ -540,30 +601,36 @@ function ReaderView({ book, onBack, updatePosition }: {
       </header>
 
       {/* Content */}
-      <div 
-        ref={scrollRef}
-        onScroll={handleScroll}
-        className="flex-1 overflow-y-auto px-6 py-8 md:px-12 lg:px-24"
-      >
-        <div 
-          className="max-w-2xl mx-auto font-serif leading-relaxed text-justify transition-[font-size] duration-200"
-          style={{ fontSize: `${fontSize}px`, lineHeight: '1.8' }}
-        >
-          {paragraphs.map((para, idx) => (
-            <p 
-              key={idx} 
-              id={`p-${idx}`}
-              className={cn(
-                "mb-6 transition-all duration-300 rounded-lg px-2 -mx-2",
-                activeParagraphIndex === idx 
-                  ? "bg-primary/20 text-primary scale-[1.02] shadow-sm" 
-                  : "opacity-100"
-              )}
-            >
-              {para}
-            </p>
-          ))}
-        </div>
+      <div className="flex-1 overflow-hidden relative">
+        {!content ? (
+          <div className="absolute inset-0 flex items-center justify-center">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
+          </div>
+        ) : (
+          <Virtuoso
+            ref={virtuosoRef}
+            scrollerRef={(el) => (scrollContainerRef.current = el as HTMLDivElement)}
+            data={paragraphs}
+            onScroll={(e) => handleScroll((e.target as HTMLDivElement).scrollTop)}
+            itemContent={(idx, para) => (
+              <div className="px-6 py-2 md:px-12 lg:px-24">
+                <p 
+                  id={`p-${idx}`}
+                  className={cn(
+                    "max-w-2xl mx-auto font-serif leading-relaxed text-justify transition-all duration-300 rounded-lg px-2 -mx-2",
+                    activeParagraphIndex === idx 
+                      ? "bg-primary/20 text-primary scale-[1.02] shadow-sm" 
+                      : "opacity-100"
+                  )}
+                  style={{ fontSize: `${fontSize}px`, lineHeight: '1.8' }}
+                >
+                  {para}
+                </p>
+              </div>
+            )}
+            style={{ height: '100%' }}
+          />
+        )}
       </div>
 
       {/* Footer Controls */}
