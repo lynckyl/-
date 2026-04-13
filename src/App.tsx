@@ -220,6 +220,8 @@ function ReaderView({ book, onBack, updatePosition }: {
     fontSizeRef.current = fontSize;
   }, [fontSize]);
   const [autoScrollSpeed, setAutoScrollSpeed] = useState(0); // 0 to 100
+  const [readingRate, setReadingRate] = useState(1.0);
+  const readingRateRef = useRef(readingRate);
   const [isReading, setIsReading] = useState(false);
   const [sleepTimer, setSleepTimer] = useState<number | null>(null); // minutes
   const [timeLeft, setTimeLeft] = useState<number | null>(null); // seconds
@@ -241,6 +243,10 @@ function ReaderView({ book, onBack, updatePosition }: {
   useEffect(() => {
     flipModeRef.current = flipMode;
   }, [flipMode]);
+
+  useEffect(() => {
+    readingRateRef.current = readingRate;
+  }, [readingRate]);
 
   // Auto Scroll/Flip Logic
   const animate = useCallback((time: number) => {
@@ -304,7 +310,7 @@ function ReaderView({ book, onBack, updatePosition }: {
     const text = paragraphs[index];
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.lang = 'zh-CN';
-    utterance.rate = 1.0;
+    utterance.rate = readingRateRef.current;
     
     utterance.onend = () => {
       setTimeout(() => {
@@ -562,6 +568,42 @@ function ReaderView({ book, onBack, updatePosition }: {
                       ? '数值越大滚动越快' 
                       : `约每 ${Math.round((105 - autoScrollSpeed) * 0.15)} 秒翻一页`}
                   </p>
+                </div>
+
+                {/* TTS Reading Rate */}
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Volume2 className="w-4 h-4" />
+                      <span className="text-sm font-medium">朗读语速</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Button 
+                        variant="outline" 
+                        size="icon" 
+                        className="h-8 w-8"
+                        onClick={() => setReadingRate(prev => Math.max(0.5, Math.round((prev - 0.1) * 10) / 10))}
+                      >
+                        -
+                      </Button>
+                      <span className="text-sm font-mono w-8 text-center">{readingRate.toFixed(1)}</span>
+                      <Button 
+                        variant="outline" 
+                        size="icon" 
+                        className="h-8 w-8"
+                        onClick={() => setReadingRate(prev => Math.min(2.0, Math.round((prev + 0.1) * 10) / 10))}
+                      >
+                        +
+                      </Button>
+                    </div>
+                  </div>
+                  <Slider 
+                    value={[readingRate]} 
+                    min={0.5} 
+                    max={2.0} 
+                    step={0.1} 
+                    onValueChange={(v: number[]) => setReadingRate(v[0])} 
+                  />
                 </div>
 
                 {/* Sleep Timer */}
