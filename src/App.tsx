@@ -94,15 +94,22 @@ type SortField = 'name' | 'author' | 'importTime';
 
 export default function App() {
   const [books, setBooks] = useState<BookData[]>(() => {
-    const saved = localStorage.getItem('yuedu_books');
-    const parsed = saved ? JSON.parse(saved) : [];
-    // Migrate old data to include new mandatory fields
-    return parsed.map((b: any) => ({
-      ...b,
-      tags: b.tags || [],
-      importTime: b.importTime || Date.now(),
-      author: b.author || ''
-    }));
+    try {
+      const saved = localStorage.getItem('yuedu_books');
+      const parsed = saved ? JSON.parse(saved) : [];
+      // Migrate old data to include new mandatory fields
+      return parsed.map((b: any) => ({
+        ...b,
+        tags: b.tags || [],
+        importTime: b.importTime || Date.now(),
+        author: b.author || '',
+        lastPosition: b.lastPosition || 0,
+        lastParagraphIndex: b.lastParagraphIndex || 0
+      }));
+    } catch (e) {
+      console.error("Failed to load books from localStorage:", e);
+      return [];
+    }
   });
   const [currentBookId, setCurrentBookId] = useState<string | null>(null);
   const [view, setView] = useState<'library' | 'reader'>('library');
@@ -769,7 +776,8 @@ function ReaderView({ book, onBack, updateProgress }: {
       fontFamily: 'serif',
       theme: 'light',
       flipMode: 'scroll',
-      readingRate: 1.0
+      readingRate: 1.0,
+      voiceURI: ''
     };
   }, []);
 
@@ -778,6 +786,10 @@ function ReaderView({ book, onBack, updateProgress }: {
   const [fontFamily, setFontFamily] = useState<'sans' | 'serif' | 'mono' | 'kaiti'>(savedSettings.fontFamily);
   const [theme, setTheme] = useState<'light' | 'dark' | 'sepia'>(savedSettings.theme);
   const [flipMode, setFlipMode] = useState<'scroll' | 'page'>(savedSettings.flipMode);
+  const [voiceURI, setVoiceURI] = useState<string>(savedSettings.voiceURI);
+  const voiceURIRef = useRef(voiceURI);
+  const [availableVoices, setAvailableVoices] = useState<SpeechSynthesisVoice[]>([]);
+  const voicesRef = useRef(availableVoices);
   
   const [activeParagraphIndex, setActiveParagraphIndex] = useState<number | null>(null);
   const activeIndexRef = useRef<number | null>(null);
@@ -816,9 +828,29 @@ function ReaderView({ book, onBack, updateProgress }: {
   
   // Save settings as defaults whenever they change
   useEffect(() => {
-    const settings = { fontSize, fontFamily, theme, flipMode, readingRate };
+    const settings = { fontSize, fontFamily, theme, flipMode, readingRate, voiceURI };
     localStorage.setItem('yuedu_reader_settings', JSON.stringify(settings));
-  }, [fontSize, fontFamily, theme, flipMode, readingRate]);
+  }, [fontSize, fontFamily, theme, flipMode, readingRate, voiceURI]);
+
+  // Load available voices
+  useEffect(() => {
+    const loadVoices = () => {
+      const voices = window.speechSynthesis.getVoices();
+      if (voices.length > 0) {
+        // Preference: Chinese voices, then others
+        const sorted = voices.sort((a, b) => {
+          const aIsZh = a.lang.startsWith('zh');
+          const bIsZh = b.lang.startsWith('zh');
+          if (aIsZh && !bIsZh) return -1;
+          if (!aIsZh && bIsZh) return 1;
+          return a.name.localeCompare(b.name);
+        });
+        setAvailableVoices(sorted);
+      }
+    };
+    loadVoices();
+    window.speechSynthesis.onvoiceschanged = loadVoices;
+  }, []);
 
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -830,8 +862,13 @@ function ReaderView({ book, onBack, updateProgress }: {
   const synth = window.speechSynthesis;
   const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const ttsTimeoutRef = useRef<number | null>(null);
 
   // Keep refs in sync
+  useEffect(() => {
+    voicesRef.current = availableVoices;
+  }, [availableVoices]);
+
   useEffect(() => {
     speedRef.current = autoScrollSpeed;
   }, [autoScrollSpeed]);
@@ -839,10 +876,6 @@ function ReaderView({ book, onBack, updateProgress }: {
   useEffect(() => {
     flipModeRef.current = flipMode;
   }, [flipMode]);
-
-  useEffect(() => {
-    readingRateRef.current = readingRate;
-  }, [readingRate]);
 
   // Auto Scroll/Flip Logic
   const animate = useCallback((time: number) => {
@@ -869,6 +902,8 @@ function ReaderView({ book, onBack, updateProgress }: {
     lastTimeRef.current.current = time;
     requestRef.current = requestAnimationFrame(animate);
   }, []);
+
+  // Removed redundant effect to consolidate above
 
   useEffect(() => {
     if (autoScrollSpeed > 0) {
@@ -905,15 +940,42 @@ function ReaderView({ book, onBack, updateProgress }: {
       return;
     }
 
+    // Clear any pending utterances first to avoid triggering stale onend/onerror
+    synth.cancel();
+    if (synth.paused) synth.resume();
+
     setActiveParagraphIndex(index);
     activeIndexRef.current = index;
     
     const text = paragraphs[index];
     const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = 'zh-CN';
-    utterance.rate = readingRateRef.current;
+    
+    // Apply selected voice
+    if (voiceURIRef.current) {
+      const voice = voicesRef.current.find(v => v.voiceURI === voiceURIRef.current);
+      if (voice) {
+        utterance.voice = voice;
+        utterance.lang = voice.lang; 
+      }
+    } else {
+      utterance.lang = 'zh-CN';
+    }
+    
+    // Robust rate sanitization
+    const rate = typeof readingRateRef.current === 'number' 
+      ? Math.max(0.1, Math.min(2.0, readingRateRef.current)) 
+      : 1.0;
+    utterance.rate = rate;
+    
+    utterance.onstart = () => {
+      if (utteranceRef.current !== utterance) return;
+      if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing';
+    };
     
     utterance.onend = () => {
+      // Robust check: only continue if this is still the active utterance
+      if (utteranceRef.current !== utterance) return;
+      
       // Update progress as we read
       updateProgress(scrollContainerRef.current?.scrollTop || 0, index);
       
@@ -922,14 +984,19 @@ function ReaderView({ book, onBack, updateProgress }: {
         audioRef.current.play().catch(() => {});
       }
       
-      setTimeout(() => {
-        if (activeIndexRef.current !== null) {
+      if (ttsTimeoutRef.current) window.clearTimeout(ttsTimeoutRef.current);
+      ttsTimeoutRef.current = window.setTimeout(() => {
+        if (activeIndexRef.current !== null && isReadingRef.current) {
           readNextParagraph(index + 1);
         }
       }, 300);
     };
 
-    utterance.onerror = () => {
+    utterance.onerror = (event) => {
+      if (utteranceRef.current !== utterance) return;
+      // 'interrupted' is normal when we cancel, skip clearing state
+      if (event.error === 'interrupted') return;
+      
       setIsReading(false);
       setActiveParagraphIndex(null);
       activeIndexRef.current = null;
@@ -938,7 +1005,11 @@ function ReaderView({ book, onBack, updateProgress }: {
     };
 
     utteranceRef.current = utterance;
-    synth.speak(utterance);
+    
+    // Some mobile browsers need a small delay after cancel() for the new utterance to be heard
+    setTimeout(() => {
+      synth.speak(utterance);
+    }, 50);
 
     // Only scroll if the paragraph is outside or near the bottom of the visible range
     const { startIndex, endIndex } = visibleRangeRef.current;
@@ -956,6 +1027,7 @@ function ReaderView({ book, onBack, updateProgress }: {
   const toggleReading = useCallback(() => {
     if (isReading) {
       synth.cancel();
+      if (ttsTimeoutRef.current) window.clearTimeout(ttsTimeoutRef.current);
       setIsReading(false);
       setActiveParagraphIndex(null);
       activeIndexRef.current = null;
@@ -967,6 +1039,11 @@ function ReaderView({ book, onBack, updateProgress }: {
     } else {
       // Always start reading from the first currently visible paragraph
       const startIndex = visibleRangeRef.current.startIndex;
+      
+      // Clear queue and resume to fix common mobile browser TTS bugs
+      synth.cancel();
+      if (synth.paused) synth.resume();
+      
       readNextParagraph(startIndex); 
       setIsReading(true);
       if (audioRef.current) {
@@ -975,6 +1052,27 @@ function ReaderView({ book, onBack, updateProgress }: {
       if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing';
     }
   }, [isReading, readNextParagraph, synth]);
+
+  // Voice/Rate sync and immediate feedback with debounce
+  const rateSyncTimeoutRef = useRef<number | null>(null);
+  useEffect(() => {
+    voiceURIRef.current = voiceURI;
+    readingRateRef.current = readingRate;
+    
+    // If voice or rate changes while reading, restart current paragraph for immediate feedback
+    if (isReading && activeIndexRef.current !== null) {
+      if (rateSyncTimeoutRef.current) window.clearTimeout(rateSyncTimeoutRef.current);
+      rateSyncTimeoutRef.current = window.setTimeout(() => {
+        if (isReading && activeIndexRef.current !== null) {
+          synth.cancel();
+          readNextParagraph(activeIndexRef.current);
+        }
+      }, 300); // 300ms debounce for smoother slider dragging
+    }
+    return () => {
+      if (rateSyncTimeoutRef.current) window.clearTimeout(rateSyncTimeoutRef.current);
+    };
+  }, [voiceURI, readingRate, isReading, readNextParagraph, synth]);
 
   // Media Session Setup
   useEffect(() => {
@@ -1057,12 +1155,34 @@ function ReaderView({ book, onBack, updateProgress }: {
 
   // Save position on scroll (debounced)
   const scrollTimeoutRef = useRef<number | null>(null);
-  const handleScroll = (scrollTop: number) => {
+  const handleScroll = useCallback((scrollTop: number) => {
     if (scrollTimeoutRef.current) window.clearTimeout(scrollTimeoutRef.current);
     scrollTimeoutRef.current = window.setTimeout(() => {
+      // Use the ref directly to avoid stale range info
       updateProgress(scrollTop, visibleRangeRef.current.startIndex);
     }, 500);
-  };
+  }, [updateProgress]);
+
+  const isReadingRef = useRef(isReading);
+  useEffect(() => {
+    isReadingRef.current = isReading;
+  }, [isReading]);
+
+  // Robust cleanup of all app-wide side effects
+  useEffect(() => {
+    return () => {
+      if (scrollTimeoutRef.current) window.clearTimeout(scrollTimeoutRef.current);
+      if (ttsTimeoutRef.current) window.clearTimeout(ttsTimeoutRef.current);
+      if (rateSyncTimeoutRef.current) window.clearTimeout(rateSyncTimeoutRef.current);
+      if (requestRef.current) cancelAnimationFrame(requestRef.current);
+      if (utteranceRef.current) {
+        utteranceRef.current.onstart = null;
+        utteranceRef.current.onend = null;
+        utteranceRef.current.onerror = null;
+      }
+      synth.cancel();
+    };
+  }, [synth]);
 
   const themeConfig = {
     light: { bg: 'bg-[#fdfcf8]', text: 'text-[#1c1917]', border: 'border-[#e7e5e4]' },
@@ -1442,40 +1562,68 @@ function ReaderView({ book, onBack, updateProgress }: {
                 </div>
               </div>
 
-              {/* TTS Reading Rate */}
-              <div className="space-y-4">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <Volume2 className="w-4 h-4" />
-                    <span className="text-sm font-medium">朗读语速</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <Button 
-                      variant="outline" 
-                      size="icon" 
-                      className="h-8 w-8"
-                      onClick={() => setReadingRate(prev => Math.max(0.5, Math.round((prev - 0.1) * 10) / 10))}
-                    >
-                      -
-                    </Button>
-                    <span className="text-sm font-mono w-8 text-center">{readingRate.toFixed(1)}</span>
-                    <Button 
-                      variant="outline" 
-                      size="icon" 
-                      className="h-8 w-8"
-                      onClick={() => setReadingRate(prev => Math.min(2.0, Math.round((prev + 0.1) * 10) / 10))}
-                    >
-                      +
-                    </Button>
-                  </div>
+              {/* TTS Settings Group */}
+              <div className="space-y-4 pt-4 border-t border-muted-foreground/10">
+                <div className="flex items-center gap-2 text-primary">
+                  <Volume2 className="w-4 h-4" />
+                  <span className="text-sm font-semibold">语音朗读设置</span>
                 </div>
-                <Slider 
-                  value={[readingRate]} 
-                  min={0.5} 
-                  max={2.0} 
-                  step={0.1} 
-                  onValueChange={(v: number[]) => setReadingRate(v[0])} 
-                />
+
+                {/* Voice Selection */}
+                <div className="space-y-2">
+                  <label className="text-[10px] text-muted-foreground uppercase tracking-wider">选择音色 (含 AI 模型音色)</label>
+                  <Select value={voiceURI} onValueChange={setVoiceURI}>
+                    <SelectTrigger className="w-full text-xs">
+                      <SelectValue placeholder="系统默认 (中文)" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="">系统默认 (自动选择)</SelectItem>
+                      {availableVoices.map(voice => (
+                        <SelectItem key={voice.voiceURI} value={voice.voiceURI} className="text-xs">
+                          {voice.name}
+                          {voice.localService ? ' (本地)' : ' (云端/AI)'}
+                          {voice.lang.includes('zh') ? ' [中文]' : ''}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-[10px] text-muted-foreground">
+                    提示：部分云端语音具有更自然的 AI 朗读效果。
+                  </p>
+                </div>
+
+                {/* Reading Rate */}
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-muted-foreground">朗读语速</span>
+                    <div className="flex items-center gap-2">
+                      <Button 
+                        variant="outline" 
+                        size="icon" 
+                        className="h-6 w-6"
+                        onClick={() => setReadingRate(prev => Math.max(0.5, Math.round((prev - 0.1) * 10) / 10))}
+                      >
+                        -
+                      </Button>
+                      <span className="text-xs font-mono w-8 text-center">{readingRate.toFixed(1)}</span>
+                      <Button 
+                        variant="outline" 
+                        size="icon" 
+                        className="h-6 w-6"
+                        onClick={() => setReadingRate(prev => Math.min(2.0, Math.round((prev + 0.1) * 10) / 10))}
+                      >
+                        +
+                      </Button>
+                    </div>
+                  </div>
+                  <Slider 
+                    value={[readingRate]} 
+                    min={0.5} 
+                    max={2.0} 
+                    step={0.1} 
+                    onValueChange={(v: number[]) => setReadingRate(v[0])} 
+                  />
+                </div>
               </div>
 
               {/* Sleep Timer */}
@@ -1516,6 +1664,13 @@ function ReaderView({ book, onBack, updateProgress }: {
           </motion.div>
         )}
       </AnimatePresence>
+      <audio 
+        ref={audioRef} 
+        src="data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQQAAAAAAA==" 
+        loop 
+        preload="auto" 
+        className="hidden" 
+      />
     </motion.div>
   );
 }
