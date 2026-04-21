@@ -30,7 +30,13 @@ import {
   MoreVertical,
   User,
   Calendar,
-  GripVertical
+  GripVertical,
+  Cloud,
+  Globe,
+  Loader2,
+  FolderOpen,
+  Smartphone,
+  Share2
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Button } from '@/components/ui/button';
@@ -45,6 +51,11 @@ import {
 } from '@/components/ui/sheet';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
+import {
+  Tabs,
+  TabsList,
+  TabsTrigger
+} from '@/components/ui/tabs';
 import {
   Select,
   SelectContent,
@@ -177,6 +188,22 @@ export default function App() {
     setBooks(prev => prev.map(b => b.id === id ? { ...b, ...metadata } : b));
   };
 
+  const addBookManually = async (name: string, content: string) => {
+    const id = Date.now().toString();
+    await saveBookContent(id, content);
+    const newBook: BookData = {
+      id,
+      name: name.endsWith('.txt') ? name : `${name}.txt`,
+      author: '',
+      tags: [],
+      importTime: Date.now(),
+      contentSize: content.length,
+      lastPosition: 0,
+      lastParagraphIndex: 0
+    };
+    setBooks(prev => [newBook, ...prev]);
+  };
+
   return (
     <div className="min-h-screen bg-background text-foreground selection:bg-primary/20">
       <AnimatePresence mode="wait">
@@ -188,6 +215,7 @@ export default function App() {
             onOpen={openBook} 
             onDelete={deleteBook}
             onUpdateMetadata={updateBookMetadata}
+            onAddBook={addBookManually}
           />
         ) : (
           <ReaderView 
@@ -204,22 +232,29 @@ export default function App() {
   );
 }
 
-function LibraryView({ books, onImport, onOpen, onDelete, onUpdateMetadata }: { 
+function LibraryView({ books, onImport, onOpen, onDelete, onUpdateMetadata, onAddBook }: { 
   books: BookData[], 
   onImport: (files: File[]) => void,
   onOpen: (id: string) => void,
   onDelete: (id: string) => void,
   onUpdateMetadata: (id: string, metadata: Partial<BookData>) => void,
+  onAddBook: (name: string, content: string) => void,
   key?: string
 }) {
   const [searchQuery, setSearchQuery] = useState('');
   const [sortField, setSortField] = useState<SortField>('importTime');
   const [editingBook, setEditingBook] = useState<BookData | null>(null);
+  const [isCloudImportOpen, setIsCloudImportOpen] = useState(false);
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({ 
     onDrop: onImport,
     accept: { 'text/plain': ['.txt'] }
   } as any);
+
+  const triggerNativeImport = () => {
+    const input = document.getElementById('native-file-input');
+    if (input) input.click();
+  };
 
   const sortLabels: Record<SortField, string> = {
     importTime: '最近导入',
@@ -280,11 +315,14 @@ function LibraryView({ books, onImport, onOpen, onDelete, onUpdateMetadata }: {
             </SelectContent>
           </Select>
           <div {...getRootProps()}>
-            <input {...getInputProps()} />
+            <input {...getInputProps()} id="native-file-input" />
             <Button variant="outline" className="gap-2">
               <Upload className="w-4 h-4" /> 导入
             </Button>
           </div>
+          <Button variant="outline" className="gap-2" onClick={() => setIsCloudImportOpen(true)}>
+            <Cloud className="w-4 h-4" /> 网盘导入
+          </Button>
         </div>
       </div>
 
@@ -359,7 +397,7 @@ function LibraryView({ books, onImport, onOpen, onDelete, onUpdateMetadata }: {
             isDragActive ? "border-primary bg-primary/5 scale-[1.02]" : "border-muted-foreground/20 hover:border-primary/50"
           )}
         >
-          <input {...getInputProps()} />
+          <input {...getInputProps()} id="native-file-input" />
           <Upload className="w-12 h-12 mx-auto mb-4 text-muted-foreground" />
           <p className="text-lg font-medium">点击或拖拽 TXT 文件到此处</p>
           <p className="text-sm text-muted-foreground mt-1 text-balance">目前您的书架还是空的，快去导入一本好书吧</p>
@@ -377,10 +415,270 @@ function LibraryView({ books, onImport, onOpen, onDelete, onUpdateMetadata }: {
         />
       )}
 
+      {isCloudImportOpen && (
+        <CloudImportDialog 
+          onClose={() => setIsCloudImportOpen(false)}
+          onImport={onAddBook}
+          onNativeImport={triggerNativeImport}
+        />
+      )}
+
       <footer className="mt-16 pb-8 text-center">
         <p className="text-xs text-muted-foreground font-mono">v1.0.0</p>
       </footer>
     </motion.div>
+  );
+}
+
+function CloudImportDialog({ onClose, onImport, onNativeImport }: { 
+  onClose: () => void, 
+  onImport: (name: string, content: string) => void,
+  onNativeImport: () => void
+}) {
+  const [mode, setMode] = useState<'url' | 'webdav' | 'native'>('url');
+  const [url, setUrl] = useState('');
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  
+  // WebDAV browsing state
+  const [webdavPath, setWebdavPath] = useState('/');
+  const [directoryItems, setDirectoryItems] = useState<any[]>([]);
+  const [isBrowsing, setIsBrowsing] = useState(false);
+
+  const decodeBuffer = async (buffer: ArrayBuffer): Promise<string> => {
+    const uint8Array = new Uint8Array(buffer);
+    const result = jschardet.detect(uint8Array as any);
+    const encoding = result.encoding || 'UTF-8';
+    return new TextDecoder(encoding).decode(buffer);
+  };
+
+  const handleUrlImport = async () => {
+    if (!url) return;
+    setIsLoading(true);
+    setError(null);
+    try {
+      const response = await fetch(`/api/cloud/fetch?url=${encodeURIComponent(url)}`);
+      if (!response.ok) throw new Error('下载失败');
+      const buffer = await response.arrayBuffer();
+      const content = await decodeBuffer(buffer);
+      const filename = url.split('/').pop()?.split('?')[0] || '未命名书籍';
+      onImport(filename, content);
+      onClose();
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleWebDavList = async (path: string = '/') => {
+    setIsBrowsing(true);
+    setError(null);
+    try {
+      const resp = await fetch('/api/cloud/webdav/list', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url, username, password, path })
+      });
+      if (!resp.ok) throw new Error('连接失败');
+      const data = await resp.json();
+      setDirectoryItems(Array.isArray(data) ? data : []);
+      setWebdavPath(path);
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setIsBrowsing(false);
+    }
+  };
+
+  const handleWebDavImportItem = async (item: any) => {
+    if (item.type === 'directory') {
+      handleWebDavList(item.filename);
+      return;
+    }
+    
+    setIsLoading(true);
+    setError(null);
+    try {
+      const resp = await fetch('/api/cloud/webdav/fetch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url, username, password, filePath: item.filename })
+      });
+      if (!resp.ok) throw new Error('下载失败');
+      const buffer = await resp.arrayBuffer();
+      const content = await decodeBuffer(buffer);
+      onImport(item.basename, content);
+      onClose();
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleImportAllFromFolder = async () => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      let count = 0;
+      for (const item of directoryItems) {
+        if (item.type === 'file' && (item.basename.endsWith('.txt') || item.basename.endsWith('.TXT'))) {
+          const resp = await fetch('/api/cloud/webdav/fetch', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url, username, password, filePath: item.filename })
+          });
+          if (resp.ok) {
+            const buffer = await resp.arrayBuffer();
+            const content = await decodeBuffer(buffer);
+            onImport(item.basename, content);
+            count++;
+          }
+        }
+      }
+      if (count === 0) setError('未在当前文件夹找到 .txt 文件');
+      else onClose();
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  return (
+    <Dialog open={true} onOpenChange={onClose}>
+      <DialogContent className="max-w-2xl">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Cloud className="w-5 h-4" /> 网盘/系统联动导入
+          </DialogTitle>
+        </DialogHeader>
+        
+        <Tabs value={mode} onValueChange={(v: any) => setMode(v)} className="mt-4">
+          <TabsList className="grid w-full grid-cols-3">
+            <TabsTrigger value="url">直链导入</TabsTrigger>
+            <TabsTrigger value="webdav">WebDAV</TabsTrigger>
+            <TabsTrigger value="native">手机系统集成</TabsTrigger>
+          </TabsList>
+          
+          <div className="mt-6 space-y-4 min-h-[300px]">
+            {mode === 'url' ? (
+              <div className="space-y-4">
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">文件链接 (URL)</label>
+                  <Input 
+                    placeholder="请输入书籍下载直链 (支持 .txt)" 
+                    value={url} 
+                    onChange={e => setUrl(e.target.value)}
+                  />
+                  <p className="text-[10px] text-muted-foreground">提示：您可以从公网直接获取 TXT 文件的链接进行导入。</p>
+                </div>
+                <Button className="w-full" disabled={isLoading || !url} onClick={handleUrlImport}>
+                  {isLoading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Globe className="w-4 h-4 mr-2" />}
+                  立即导入
+                </Button>
+              </div>
+            ) : mode === 'webdav' ? (
+              <div className="space-y-4">
+                {!directoryItems.length ? (
+                  <div className="space-y-4">
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium">WebDAV 服务地址</label>
+                      <Input placeholder="https://example.com/dav" value={url} onChange={e => setUrl(e.target.value)} />
+                    </div>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium">用户名</label>
+                        <Input value={username} onChange={e => setUsername(e.target.value)} />
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium">密码</label>
+                        <Input type="password" value={password} onChange={e => setPassword(e.target.value)} />
+                      </div>
+                    </div>
+                    <Button className="w-full" onClick={() => handleWebDavList('/')} disabled={isBrowsing || !url}>
+                      {isBrowsing ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : "连接并浏览"}
+                    </Button>
+                    <p className="text-[10px] text-muted-foreground text-center">
+                      提示：您可以使用 Alist 等工具将阿里云盘、百度网盘等挂载为 WebDAV 服务。
+                    </p>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between bg-secondary/50 p-2 rounded-lg sticky top-0 z-10">
+                      <div className="flex items-center gap-2 text-xs truncate max-w-[70%]">
+                        <FolderOpen className="w-3 h-3 shrink-0" />
+                        <span className="truncate">{webdavPath}</span>
+                      </div>
+                      <div className="flex gap-2">
+                        <Button variant="ghost" size="sm" className="h-7 text-[10px]" onClick={() => handleWebDavList('/')}>回到根目录</Button>
+                        <Button variant="outline" size="sm" className="h-7 text-[10px]" onClick={handleImportAllFromFolder}>一键导入本页全部 TXT</Button>
+                      </div>
+                    </div>
+                    
+                    <div className="max-h-[300px] overflow-y-auto space-y-1 pr-2 custom-scrollbar border rounded-lg p-2">
+                      {webdavPath !== '/' && (
+                        <div 
+                          className="flex items-center gap-3 p-2 hover:bg-secondary cursor-pointer rounded text-sm opacity-60"
+                          onClick={() => handleWebDavList(webdavPath.split('/').slice(0, -1).join('/') || '/')}
+                        >
+                          <ChevronLeft className="w-4 h-4" /> ..上级目录
+                        </div>
+                      )}
+                      {directoryItems.map((item, idx) => (
+                        <div 
+                          key={idx}
+                          className="flex items-center gap-3 p-2 hover:bg-secondary cursor-pointer rounded text-sm group"
+                          onClick={() => handleWebDavImportItem(item)}
+                        >
+                          {item.type === 'directory' ? <FolderOpen className="w-4 h-4 text-primary" /> : <Book className="w-4 h-4 text-muted-foreground" />}
+                          <span className="flex-1 truncate">{item.basename}</span>
+                          {item.type === 'file' && (item.basename.endsWith('.txt') || item.basename.endsWith('.TXT')) && (
+                            <Plus className="w-3 h-3 opacity-0 group-hover:opacity-100 transition-opacity" />
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                    <Button variant="ghost" className="w-full text-xs" onClick={() => setDirectoryItems([])}>更换连接信息</Button>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="space-y-6">
+                <div className="bg-primary/5 p-4 rounded-xl space-y-3">
+                  <h4 className="text-sm font-semibold flex items-center gap-2">
+                    <Smartphone className="w-4 h-4 text-primary" /> 方案 A：系统文件访问 (推荐)
+                  </h4>
+                  <p className="text-xs text-muted-foreground leading-relaxed">
+                    点击下方按钮将打开 Android 系统文件选择器。在侧边栏中，您可以直接看到已安装的<b>百度网盘、阿里云盘、夸克</b>等并浏览其文件。
+                  </p>
+                  <Button className="w-full gap-2" onClick={() => { onNativeImport(); onClose(); }}>
+                    <FolderOpen className="w-4 h-4" /> 唤起手机系统文件库
+                  </Button>
+                </div>
+
+                <div className="bg-secondary/30 p-4 rounded-xl space-y-3">
+                  <h4 className="text-sm font-semibold flex items-center gap-2">
+                    <Share2 className="w-4 h-4 text-primary" /> 方案 B：侧边分享
+                  </h4>
+                  <p className="text-xs text-muted-foreground leading-relaxed">
+                    1. 在百度网盘等 App 中选中文件。<br />
+                    2. 点击“分享”或“用其他应用打开”。<br />
+                    3. 在弹出的应用列表中选择“<b>悦读</b>”即可。
+                  </p>
+                  <p className="text-[10px] text-muted-foreground">注意：此功能要求您已将“悦读”添加到手机桌面。</p>
+                </div>
+              </div>
+            )}
+            
+            {error && <p className="text-destructive text-xs py-2">{error}</p>}
+          </div>
+        </Tabs>
+      </DialogContent>
+    </Dialog>
   );
 }
 
