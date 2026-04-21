@@ -20,7 +20,17 @@ import {
   Sun,
   Moon,
   Coffee,
-  List
+  List,
+  Search,
+  Filter,
+  SortAsc,
+  Tag as TagIcon,
+  Plus,
+  X,
+  MoreVertical,
+  User,
+  Calendar,
+  GripVertical
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Button } from '@/components/ui/button';
@@ -33,20 +43,54 @@ import {
   SheetTitle, 
   SheetTrigger 
 } from '@/components/ui/sheet';
+import { Input } from '@/components/ui/input';
+import { Badge } from '@/components/ui/badge';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { cn } from '@/lib/utils';
 
 interface BookData {
   id: string;
   name: string;
+  author?: string;
+  tags: string[];
+  importTime: number;
   contentSize: number;
   lastPosition: number;
   lastParagraphIndex: number;
 }
 
+type SortField = 'name' | 'author' | 'importTime';
+
 export default function App() {
   const [books, setBooks] = useState<BookData[]>(() => {
     const saved = localStorage.getItem('yuedu_books');
-    return saved ? JSON.parse(saved) : [];
+    const parsed = saved ? JSON.parse(saved) : [];
+    // Migrate old data to include new mandatory fields
+    return parsed.map((b: any) => ({
+      ...b,
+      tags: b.tags || [],
+      importTime: b.importTime || Date.now(),
+      author: b.author || ''
+    }));
   });
   const [currentBookId, setCurrentBookId] = useState<string | null>(null);
   const [view, setView] = useState<'library' | 'reader'>('library');
@@ -85,6 +129,9 @@ export default function App() {
             const newBook: BookData = {
               id,
               name: file.name.replace('.txt', ''),
+              author: '',
+              tags: [],
+              importTime: Date.now(),
               contentSize: content.length,
               lastPosition: 0,
               lastParagraphIndex: 0
@@ -100,6 +147,9 @@ export default function App() {
             const newBook: BookData = {
               id,
               name: file.name.replace('.txt', ''),
+              author: '',
+              tags: [],
+              importTime: Date.now(),
               contentSize: content.length,
               lastPosition: 0,
               lastParagraphIndex: 0
@@ -123,6 +173,10 @@ export default function App() {
     setView('reader');
   };
 
+  const updateBookMetadata = (id: string, metadata: Partial<Pick<BookData, 'author' | 'tags' | 'name'>>) => {
+    setBooks(prev => prev.map(b => b.id === id ? { ...b, ...metadata } : b));
+  };
+
   return (
     <div className="min-h-screen bg-background text-foreground selection:bg-primary/20">
       <AnimatePresence mode="wait">
@@ -133,6 +187,7 @@ export default function App() {
             onImport={handleImport} 
             onOpen={openBook} 
             onDelete={deleteBook}
+            onUpdateMetadata={updateBookMetadata}
           />
         ) : (
           <ReaderView 
@@ -149,17 +204,40 @@ export default function App() {
   );
 }
 
-function LibraryView({ books, onImport, onOpen, onDelete }: { 
+function LibraryView({ books, onImport, onOpen, onDelete, onUpdateMetadata }: { 
   books: BookData[], 
   onImport: (files: File[]) => void,
   onOpen: (id: string) => void,
   onDelete: (id: string) => void,
+  onUpdateMetadata: (id: string, metadata: Partial<BookData>) => void,
   key?: string
 }) {
+  const [searchQuery, setSearchQuery] = useState('');
+  const [sortField, setSortField] = useState<SortField>('importTime');
+  const [editingBook, setEditingBook] = useState<BookData | null>(null);
+
   const { getRootProps, getInputProps, isDragActive } = useDropzone({ 
     onDrop: onImport,
     accept: { 'text/plain': ['.txt'] }
   } as any);
+
+  const filteredAndSortedBooks = useMemo(() => {
+    return books
+      .filter(book => {
+        const query = searchQuery.toLowerCase();
+        return (
+          book.name.toLowerCase().includes(query) ||
+          (book.author || '').toLowerCase().includes(query) ||
+          (book.tags || []).some(tag => tag.toLowerCase().includes(query))
+        );
+      })
+      .sort((a, b) => {
+        if (sortField === 'name') return a.name.localeCompare(b.name);
+        if (sortField === 'author') return (a.author || '').localeCompare(b.author || '');
+        if (sortField === 'importTime') return b.importTime - a.importTime;
+        return 0;
+      });
+  }, [books, searchQuery, sortField]);
 
   return (
     <motion.div 
@@ -173,54 +251,196 @@ function LibraryView({ books, onImport, onOpen, onDelete }: {
         <p className="text-muted-foreground italic">极简、纯粹的阅读体验</p>
       </header>
 
-      <div 
-        {...getRootProps()} 
-        className={cn(
-          "border-2 border-dashed rounded-2xl p-12 text-center transition-all cursor-pointer mb-8",
-          isDragActive ? "border-primary bg-primary/5 scale-[1.02]" : "border-muted-foreground/20 hover:border-primary/50"
-        )}
-      >
-        <input {...getInputProps()} />
-        <Upload className="w-12 h-12 mx-auto mb-4 text-muted-foreground" />
-        <p className="text-lg font-medium">点击或拖拽 TXT 文件到此处</p>
-        <p className="text-sm text-muted-foreground mt-1">支持 Android & iOS 导入</p>
+      <div className="flex flex-col md:flex-row gap-4 mb-8">
+        <div className="relative flex-1">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+          <Input 
+            placeholder="搜索书名、作者或标签..." 
+            className="pl-10"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+          />
+        </div>
+        <div className="flex gap-2">
+          <Select value={sortField} onValueChange={(v) => setSortField(v as SortField)}>
+            <SelectTrigger className="w-[160px]">
+              <SortAsc className="w-4 h-4 mr-2" />
+              <SelectValue placeholder="排序方式" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="importTime">最近导入</SelectItem>
+              <SelectItem value="name">书名排序</SelectItem>
+              <SelectItem value="author">作者排序</SelectItem>
+            </SelectContent>
+          </Select>
+          <div {...getRootProps()}>
+            <input {...getInputProps()} />
+            <Button variant="outline" className="gap-2">
+              <Upload className="w-4 h-4" /> 导入
+            </Button>
+          </div>
+        </div>
       </div>
 
+      {books.length > 0 && filteredAndSortedBooks.length === 0 && (
+        <div className="text-center py-12 text-muted-foreground">
+          <p>未找到匹配的书籍</p>
+        </div>
+      )}
+
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        {books.map(book => (
-          <Card key={book.id} className="p-4 flex items-center justify-between group hover:shadow-md transition-shadow">
-            <div 
-              className="flex items-center gap-4 cursor-pointer flex-1"
-              onClick={() => onOpen(book.id)}
-            >
-              <div className="w-10 h-10 rounded-lg bg-secondary flex items-center justify-center text-secondary-foreground">
-                <Book className="w-5 h-5" />
+        {filteredAndSortedBooks.map(book => (
+          <Card key={book.id} className="p-4 flex flex-col group hover:shadow-md transition-shadow relative overflow-hidden">
+            <div className="flex items-start justify-between mb-2">
+              <div 
+                className="flex items-center gap-4 cursor-pointer flex-1"
+                onClick={() => onOpen(book.id)}
+              >
+                <div className="w-12 h-12 rounded-lg bg-secondary flex items-center justify-center text-secondary-foreground shrink-0">
+                  <Book className="w-6 h-6" />
+                </div>
+                <div className="min-w-0">
+                  <h3 className="font-medium line-clamp-1">{book.name}</h3>
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground mt-0.5">
+                    {book.author && (
+                      <span className="flex items-center gap-1">
+                        <User className="w-3 h-3" /> {book.author}
+                      </span>
+                    )}
+                    <span className="flex items-center gap-1">
+                      <Calendar className="w-3 h-3" /> {new Date(book.importTime).toLocaleDateString()}
+                    </span>
+                  </div>
+                </div>
               </div>
-              <div>
-                <h3 className="font-medium line-clamp-1">{book.name}</h3>
-                <p className="text-xs text-muted-foreground">
-                  {Math.round(book.contentSize / 1000)}k 字
-                </p>
-              </div>
+              
+              <DropdownMenu>
+                <DropdownMenuTrigger render={
+                  <Button variant="ghost" size="icon" className="h-8 w-8">
+                    <MoreVertical className="w-4 h-4" />
+                  </Button>
+                } />
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem onClick={() => setEditingBook(book)}>
+                    编辑信息
+                  </DropdownMenuItem>
+                  <DropdownMenuItem className="text-destructive" onClick={() => onDelete(book.id)}>
+                    删除书籍
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
             </div>
-            <Button 
-              variant="ghost" 
-              size="icon" 
-              className="opacity-0 group-hover:opacity-100 text-destructive hover:text-destructive hover:bg-destructive/10 transition-all"
-              onClick={() => onDelete(book.id)}
-            >
-              <Trash2 className="w-4 h-4" />
-            </Button>
+
+            <div className="flex flex-wrap gap-1 mt-auto pt-2">
+              {(book.tags || []).map(tag => (
+                <Badge key={tag} variant="secondary" className="text-[10px] py-0 px-2 font-normal">
+                  {tag}
+                </Badge>
+              ))}
+              <p className="text-[10px] text-muted-foreground ml-auto">
+                {Math.round(book.contentSize / 1000)}k 字
+              </p>
+            </div>
           </Card>
         ))}
       </div>
 
       {books.length === 0 && (
-        <div className="text-center py-20 text-muted-foreground">
-          <p>书架空空如也，快去导入一本好书吧</p>
+        <div 
+          {...getRootProps()} 
+          className={cn(
+            "border-2 border-dashed rounded-2xl p-12 text-center transition-all cursor-pointer",
+            isDragActive ? "border-primary bg-primary/5 scale-[1.02]" : "border-muted-foreground/20 hover:border-primary/50"
+          )}
+        >
+          <input {...getInputProps()} />
+          <Upload className="w-12 h-12 mx-auto mb-4 text-muted-foreground" />
+          <p className="text-lg font-medium">点击或拖拽 TXT 文件到此处</p>
+          <p className="text-sm text-muted-foreground mt-1 text-balance">目前您的书架还是空的，快去导入一本好书吧</p>
         </div>
       )}
+
+      {editingBook && (
+        <EditBookDialog 
+          book={editingBook} 
+          onClose={() => setEditingBook(null)} 
+          onSave={(metadata) => {
+            onUpdateMetadata(editingBook.id, metadata);
+            setEditingBook(null);
+          }} 
+        />
+      )}
     </motion.div>
+  );
+}
+
+function EditBookDialog({ book, onClose, onSave }: { 
+  book: BookData, 
+  onClose: () => void, 
+  onSave: (metadata: Partial<BookData>) => void 
+}) {
+  const [name, setName] = useState(book.name);
+  const [author, setAuthor] = useState(book.author || '');
+  const [tags, setTags] = useState<string[]>(book.tags);
+  const [newTag, setNewTag] = useState('');
+
+  const addTag = () => {
+    if (newTag && !tags.includes(newTag)) {
+      setTags([...tags, newTag]);
+      setNewTag('');
+    }
+  };
+
+  const removeTag = (tag: string) => {
+    setTags(tags.filter(t => t !== tag));
+  };
+
+  return (
+    <Dialog open={true} onOpenChange={onClose}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>编辑书籍信息</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-4 py-4">
+          <div className="space-y-2">
+            <label className="text-sm font-medium">书名</label>
+            <Input value={name} onChange={(e) => setName(e.target.value)} />
+          </div>
+          <div className="space-y-2">
+            <label className="text-sm font-medium">作者</label>
+            <Input value={author} onChange={(e) => setAuthor(e.target.value)} />
+          </div>
+          <div className="space-y-2">
+            <label className="text-sm font-medium">标签</label>
+            <div className="flex flex-wrap gap-2 mb-2">
+              {tags.map(tag => (
+                <Badge key={tag} className="gap-1 pr-1 bg-primary/10 text-primary border-none hover:bg-primary/20">
+                  {tag}
+                  <button onClick={() => removeTag(tag)} className="hover:text-destructive">
+                    <X className="w-3 h-3" />
+                  </button>
+                </Badge>
+              ))}
+            </div>
+            <div className="flex gap-2">
+              <Input 
+                placeholder="输入标签并回车" 
+                value={newTag} 
+                onChange={(e) => setNewTag(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') addTag(); }}
+              />
+              <Button size="icon" variant="outline" onClick={addTag}>
+                <Plus className="w-4 h-4" />
+              </Button>
+            </div>
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>取消</Button>
+          <Button onClick={() => onSave({ name, author, tags })}>保存修改</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -231,11 +451,25 @@ function ReaderView({ book, onBack, updateProgress }: {
   key?: string
 }) {
   const [content, setContent] = useState<string | null>(null);
-  const [fontSize, setFontSize] = useState(20);
+  
+  // Load default settings from localStorage
+  const savedSettings = useMemo(() => {
+    const saved = localStorage.getItem('yuedu_reader_settings');
+    return saved ? JSON.parse(saved) : {
+      fontSize: 20,
+      fontFamily: 'serif',
+      theme: 'light',
+      flipMode: 'scroll',
+      readingRate: 1.0
+    };
+  }, []);
+
+  const [fontSize, setFontSize] = useState(savedSettings.fontSize);
   const fontSizeRef = useRef(fontSize);
-  const [fontFamily, setFontFamily] = useState<'sans' | 'serif' | 'mono' | 'kaiti'>('serif');
-  const [theme, setTheme] = useState<'light' | 'dark' | 'sepia'>('light');
-  const [flipMode, setFlipMode] = useState<'scroll' | 'page'>('scroll');
+  const [fontFamily, setFontFamily] = useState<'sans' | 'serif' | 'mono' | 'kaiti'>(savedSettings.fontFamily);
+  const [theme, setTheme] = useState<'light' | 'dark' | 'sepia'>(savedSettings.theme);
+  const [flipMode, setFlipMode] = useState<'scroll' | 'page'>(savedSettings.flipMode);
+  
   const [activeParagraphIndex, setActiveParagraphIndex] = useState<number | null>(null);
   const activeIndexRef = useRef<number | null>(null);
   
@@ -264,12 +498,19 @@ function ReaderView({ book, onBack, updateProgress }: {
     fontSizeRef.current = fontSize;
   }, [fontSize]);
   const [autoScrollSpeed, setAutoScrollSpeed] = useState(0); // 0 to 100
-  const [readingRate, setReadingRate] = useState(1.0);
+  const [readingRate, setReadingRate] = useState(savedSettings.readingRate);
   const readingRateRef = useRef(readingRate);
   const [isReading, setIsReading] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [sleepTimer, setSleepTimer] = useState<number | null>(null); // minutes
   const [timeLeft, setTimeLeft] = useState<number | null>(null); // seconds
   
+  // Save settings as defaults whenever they change
+  useEffect(() => {
+    const settings = { fontSize, fontFamily, theme, flipMode, readingRate };
+    localStorage.setItem('yuedu_reader_settings', JSON.stringify(settings));
+  }, [fontSize, fontFamily, theme, flipMode, readingRate]);
+
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const visibleRangeRef = useRef({ startIndex: 0, endIndex: 0 });
@@ -390,12 +631,17 @@ function ReaderView({ book, onBack, updateProgress }: {
     utteranceRef.current = utterance;
     synth.speak(utterance);
 
-    // Scroll active paragraph into view
-    virtuosoRef.current?.scrollToIndex({
-      index,
-      align: 'center',
-      behavior: 'smooth'
-    });
+    // Only scroll if the paragraph is outside or near the bottom of the visible range
+    const { startIndex, endIndex } = visibleRangeRef.current;
+    const isVisible = index >= startIndex && index < endIndex - 1;
+    
+    if (!isVisible) {
+      virtuosoRef.current?.scrollToIndex({
+        index,
+        align: 'start',
+        behavior: 'smooth'
+      });
+    }
   }, [paragraphs, synth]);
 
   const toggleReading = useCallback(() => {
@@ -410,8 +656,8 @@ function ReaderView({ book, onBack, updateProgress }: {
       }
       if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'paused';
     } else {
-      // Start reading from the last saved paragraph or the first visible one
-      const startIndex = isReading ? visibleRangeRef.current.startIndex : (book.lastParagraphIndex || visibleRangeRef.current.startIndex);
+      // Always start reading from the first currently visible paragraph
+      const startIndex = visibleRangeRef.current.startIndex;
       readNextParagraph(startIndex); 
       setIsReading(true);
       if (audioRef.current) {
@@ -478,24 +724,27 @@ function ReaderView({ book, onBack, updateProgress }: {
     setTimeLeft(mins * 60);
   };
 
-  // Restore position
+  // Restore position when paragraphs are ready
+  const hasRestoredRef = useRef(false);
   useEffect(() => {
-    if (virtuosoRef.current) {
-      if (book.lastParagraphIndex > 0) {
-        setTimeout(() => {
-          virtuosoRef.current?.scrollToIndex({
-            index: book.lastParagraphIndex,
-            align: 'start',
-            behavior: 'auto'
-          });
-        }, 100);
-      } else if (book.lastPosition > 0) {
-        setTimeout(() => {
-          virtuosoRef.current?.scrollTo({ top: book.lastPosition });
-        }, 100);
+    if (paragraphs.length > 0 && virtuosoRef.current && !hasRestoredRef.current) {
+      hasRestoredRef.current = true;
+      const targetIndex = book.lastParagraphIndex;
+      const targetPos = book.lastPosition;
+
+      if (targetIndex > 0) {
+        // Use paragraph index for more precise restoration in virtualized lists
+        virtuosoRef.current.scrollToIndex({
+          index: targetIndex,
+          align: 'start',
+          behavior: 'auto'
+        });
+      } else if (targetPos > 0) {
+        // Fallback to pixel position
+        virtuosoRef.current.scrollTo({ top: targetPos });
       }
     }
-  }, []);
+  }, [paragraphs, book.lastParagraphIndex, book.lastPosition]);
 
   // Save position on scroll (debounced)
   const scrollTimeoutRef = useRef<number | null>(null);
@@ -581,263 +830,14 @@ function ReaderView({ book, onBack, updateProgress }: {
             </div>
           )}
           
-          <Sheet>
-            <SheetTrigger render={<Button variant="ghost" size="icon" />}>
-              <Settings className="w-5 h-5" />
-            </SheetTrigger>
-            <SheetContent className={cn(themeConfig[theme].bg, themeConfig[theme].text, themeConfig[theme].border)}>
-              <SheetHeader>
-                <SheetTitle className={themeConfig[theme].text}>阅读设置</SheetTitle>
-              </SheetHeader>
-              <div className="py-6 space-y-8">
-                {/* Theme Selection */}
-                <div className="space-y-4">
-                  <div className="flex items-center gap-2">
-                    <Sun className="w-4 h-4" />
-                    <span className="text-sm font-medium">阅读模式</span>
-                  </div>
-                  <div className="grid grid-cols-3 gap-2">
-                    <Button 
-                      variant={theme === 'light' ? "default" : "outline"} 
-                      size="sm" 
-                      className="gap-2"
-                      onClick={() => setTheme('light')}
-                    >
-                      <Sun className="w-4 h-4" /> 白天
-                    </Button>
-                    <Button 
-                      variant={theme === 'dark' ? "default" : "outline"} 
-                      size="sm" 
-                      className="gap-2"
-                      onClick={() => setTheme('dark')}
-                    >
-                      <Moon className="w-4 h-4" /> 黑夜
-                    </Button>
-                    <Button 
-                      variant={theme === 'sepia' ? "default" : "outline"} 
-                      size="sm" 
-                      className="gap-2"
-                      onClick={() => setTheme('sepia')}
-                    >
-                      <Coffee className="w-4 h-4" /> 护眼
-                    </Button>
-                  </div>
-                </div>
-
-                {/* Flip Mode Selection */}
-                <div className="space-y-4">
-                  <div className="flex items-center gap-2">
-                    <Book className="w-4 h-4" />
-                    <span className="text-sm font-medium">翻页模式</span>
-                  </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    <Button 
-                      variant={flipMode === 'scroll' ? "default" : "outline"} 
-                      size="sm" 
-                      onClick={() => setFlipMode('scroll')}
-                    >
-                      平滑滚动
-                    </Button>
-                    <Button 
-                      variant={flipMode === 'page' ? "default" : "outline"} 
-                      size="sm" 
-                      onClick={() => setFlipMode('page')}
-                    >
-                      整页翻页
-                    </Button>
-                  </div>
-                </div>
-
-                {/* Font Family Selection */}
-                <div className="space-y-4">
-                  <div className="flex items-center gap-2">
-                    <Type className="w-4 h-4" />
-                    <span className="text-sm font-medium">字体样式</span>
-                  </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    <Button 
-                      variant={fontFamily === 'sans' ? "default" : "outline"} 
-                      size="sm" 
-                      onClick={() => setFontFamily('sans')}
-                      className="font-sans"
-                    >
-                      黑体
-                    </Button>
-                    <Button 
-                      variant={fontFamily === 'serif' ? "default" : "outline"} 
-                      size="sm" 
-                      onClick={() => setFontFamily('serif')}
-                      className="font-serif"
-                    >
-                      宋体
-                    </Button>
-                    <Button 
-                      variant={fontFamily === 'kaiti' ? "default" : "outline"} 
-                      size="sm" 
-                      onClick={() => setFontFamily('kaiti')}
-                      style={{ fontFamily: 'KaiTi, STKaiti, serif' }}
-                    >
-                      楷体
-                    </Button>
-                    <Button 
-                      variant={fontFamily === 'mono' ? "default" : "outline"} 
-                      size="sm" 
-                      onClick={() => setFontFamily('mono')}
-                      className="font-mono"
-                    >
-                      等宽
-                    </Button>
-                  </div>
-                </div>
-
-                {/* Font Size */}
-                <div className="space-y-4">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <Type className="w-4 h-4" />
-                      <span className="text-sm font-medium">字体大小</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <Button 
-                        variant="outline" 
-                        size="icon" 
-                        className="h-8 w-8"
-                        onClick={() => setFontSize(prev => Math.max(12, prev - 2))}
-                      >
-                        -
-                      </Button>
-                      <span className="text-sm font-mono w-8 text-center">{fontSize}</span>
-                      <Button 
-                        variant="outline" 
-                        size="icon" 
-                        className="h-8 w-8"
-                        onClick={() => setFontSize(prev => Math.min(40, prev + 2))}
-                      >
-                        +
-                      </Button>
-                    </div>
-                  </div>
-                  <Slider 
-                    value={[fontSize]} 
-                    min={12} 
-                    max={40} 
-                    step={1} 
-                    onValueChange={(v: number[]) => setFontSize(v[0])} 
-                  />
-                </div>
-
-                {/* Auto Scroll/Flip Speed */}
-                <div className="space-y-4">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <FastForward className="w-4 h-4" />
-                      <span className="text-sm font-medium">
-                        {flipMode === 'scroll' ? '自动滚动速度' : '自动翻页频率'}
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <Button 
-                        variant="outline" 
-                        size="icon" 
-                        className="h-8 w-8"
-                        onClick={() => setAutoScrollSpeed(prev => Math.max(0, prev - 5))}
-                      >
-                        -
-                      </Button>
-                      <span className="text-sm font-mono w-8 text-center">{autoScrollSpeed}</span>
-                      <Button 
-                        variant="outline" 
-                        size="icon" 
-                        className="h-8 w-8"
-                        onClick={() => setAutoScrollSpeed(prev => Math.min(100, prev + 5))}
-                      >
-                        +
-                      </Button>
-                    </div>
-                  </div>
-                  <Slider 
-                    value={[autoScrollSpeed]} 
-                    min={0} 
-                    max={100} 
-                    step={1} 
-                    onValueChange={(v: number[]) => setAutoScrollSpeed(v[0])} 
-                  />
-                  <p className="text-[10px] text-muted-foreground text-center">
-                    {flipMode === 'scroll' 
-                      ? '数值越大滚动越快' 
-                      : `约每 ${Math.round((105 - autoScrollSpeed) * 0.15)} 秒翻一页`}
-                  </p>
-                </div>
-
-                {/* TTS Reading Rate */}
-                <div className="space-y-4">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <Volume2 className="w-4 h-4" />
-                      <span className="text-sm font-medium">朗读语速</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <Button 
-                        variant="outline" 
-                        size="icon" 
-                        className="h-8 w-8"
-                        onClick={() => setReadingRate(prev => Math.max(0.5, Math.round((prev - 0.1) * 10) / 10))}
-                      >
-                        -
-                      </Button>
-                      <span className="text-sm font-mono w-8 text-center">{readingRate.toFixed(1)}</span>
-                      <Button 
-                        variant="outline" 
-                        size="icon" 
-                        className="h-8 w-8"
-                        onClick={() => setReadingRate(prev => Math.min(2.0, Math.round((prev + 0.1) * 10) / 10))}
-                      >
-                        +
-                      </Button>
-                    </div>
-                  </div>
-                  <Slider 
-                    value={[readingRate]} 
-                    min={0.5} 
-                    max={2.0} 
-                    step={0.1} 
-                    onValueChange={(v: number[]) => setReadingRate(v[0])} 
-                  />
-                </div>
-
-                {/* Sleep Timer */}
-                <div className="space-y-4">
-                  <div className="flex items-center gap-2">
-                    <Timer className="w-4 h-4" />
-                    <span className="text-sm font-medium">定时停止</span>
-                  </div>
-                  <div className="grid grid-cols-3 gap-2">
-                    {[15, 30, 60].map(mins => (
-                      <Button 
-                        key={mins}
-                        variant={sleepTimer === mins ? "default" : "outline"}
-                        size="sm"
-                        onClick={() => startTimer(mins)}
-                      >
-                        {mins} 分钟
-                      </Button>
-                    ))}
-                    <Button 
-                      variant="outline" 
-                      size="sm" 
-                      className="col-span-3"
-                      onClick={() => {
-                        setSleepTimer(null);
-                        setTimeLeft(null);
-                      }}
-                    >
-                      取消定时
-                    </Button>
-                  </div>
-                </div>
-              </div>
-            </SheetContent>
-          </Sheet>
+          <Button 
+            variant="ghost" 
+            size="icon" 
+            onClick={() => setIsSettingsOpen(!isSettingsOpen)}
+            className={cn(isSettingsOpen && "bg-primary/20")}
+          >
+            <Settings className="w-5 h-5" />
+          </Button>
         </div>
       </header>
 
@@ -907,6 +907,301 @@ function ReaderView({ book, onBack, updateProgress }: {
           {isReading ? "停止朗读" : "有声朗读"}
         </Button>
       </footer>
+
+      {/* Draggable Settings Window */}
+      <AnimatePresence>
+        {isSettingsOpen && (
+          <motion.div
+            drag
+            dragMomentum={false}
+            initial={{ opacity: 0, scale: 0.9, y: 20 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.9 }}
+            className={cn(
+              "fixed right-4 top-20 z-50 w-[320px] max-h-[70vh] flex flex-col rounded-2xl shadow-2xl border overflow-hidden transition-colors duration-300",
+              themeConfig[theme].bg,
+              themeConfig[theme].border,
+              themeConfig[theme].text
+            )}
+          >
+            {/* Header / Drag handle */}
+            <div className="flex items-center justify-between p-4 border-b shrink-0 cursor-move bg-secondary/10">
+              <div className="flex items-center gap-2">
+                <GripVertical className="w-4 h-4 text-muted-foreground" />
+                <span className="font-semibold text-sm">阅读设置</span>
+              </div>
+              <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setIsSettingsOpen(false)}>
+                <X className="w-4 h-4" />
+              </Button>
+            </div>
+            
+            {/* Scrollable Content */}
+            <div className="flex-1 overflow-y-auto p-6 space-y-8 custom-scrollbar">
+              {/* Theme Selection */}
+              <div className="space-y-4">
+                <div className="flex items-center gap-2">
+                  <Sun className="w-4 h-4" />
+                  <span className="text-sm font-medium">阅读模式</span>
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  <Button 
+                    variant={theme === 'light' ? "default" : "outline"} 
+                    size="sm" 
+                    className="gap-2"
+                    onClick={() => setTheme('light')}
+                  >
+                    <Sun className="w-4 h-4" /> 白天
+                  </Button>
+                  <Button 
+                    variant={theme === 'dark' ? "default" : "outline"} 
+                    size="sm" 
+                    className="gap-2"
+                    onClick={() => setTheme('dark')}
+                  >
+                    <Moon className="w-4 h-4" /> 黑夜
+                  </Button>
+                  <Button 
+                    variant={theme === 'sepia' ? "default" : "outline"} 
+                    size="sm" 
+                    className="gap-2"
+                    onClick={() => setTheme('sepia')}
+                  >
+                    <Coffee className="w-4 h-4" /> 护眼
+                  </Button>
+                </div>
+              </div>
+
+              {/* Flip Mode Selection */}
+              <div className="space-y-4">
+                <div className="flex items-center gap-2">
+                  <Book className="w-4 h-4" />
+                  <span className="text-sm font-medium">翻页模式</span>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <Button 
+                    variant={flipMode === 'scroll' ? "default" : "outline"} 
+                    size="sm" 
+                    onClick={() => setFlipMode('scroll')}
+                  >
+                    平滑滚动
+                  </Button>
+                  <Button 
+                    variant={flipMode === 'page' ? "default" : "outline"} 
+                    size="sm" 
+                    onClick={() => setFlipMode('page')}
+                  >
+                    整页翻页
+                  </Button>
+                </div>
+              </div>
+
+              {/* Font Family Selection */}
+              <div className="space-y-4">
+                <div className="flex items-center gap-2">
+                  <Type className="w-4 h-4" />
+                  <span className="text-sm font-medium">字体样式</span>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <Button 
+                    variant={fontFamily === 'sans' ? "default" : "outline"} 
+                    size="sm" 
+                    onClick={() => setFontFamily('sans')}
+                    className="font-sans"
+                  >
+                    黑体
+                  </Button>
+                  <Button 
+                    variant={fontFamily === 'serif' ? "default" : "outline"} 
+                    size="sm" 
+                    onClick={() => setFontFamily('serif')}
+                    className="font-serif"
+                  >
+                    宋体
+                  </Button>
+                  <Button 
+                    variant={fontFamily === 'kaiti' ? "default" : "outline"} 
+                    size="sm" 
+                    onClick={() => setFontFamily('kaiti')}
+                    style={{ fontFamily: 'KaiTi, STKaiti, serif' }}
+                  >
+                    楷体
+                  </Button>
+                  <Button 
+                    variant={fontFamily === 'mono' ? "default" : "outline"} 
+                    size="sm" 
+                    onClick={() => setFontFamily('mono')}
+                    className="font-mono"
+                  >
+                    等宽
+                  </Button>
+                </div>
+              </div>
+
+              {/* Font Size */}
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Type className="w-4 h-4" />
+                    <span className="text-sm font-medium">字体大小</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button 
+                      variant="outline" 
+                      size="icon" 
+                      className="h-8 w-8"
+                      onClick={() => setFontSize(prev => Math.max(12, prev - 2))}
+                    >
+                      -
+                    </Button>
+                    <span className="text-sm font-mono w-8 text-center">{fontSize}</span>
+                    <Button 
+                      variant="outline" 
+                      size="icon" 
+                      className="h-8 w-8"
+                      onClick={() => setFontSize(prev => Math.min(40, prev + 2))}
+                    >
+                      +
+                    </Button>
+                  </div>
+                </div>
+                <Slider 
+                  value={[fontSize]} 
+                  min={12} 
+                  max={40} 
+                  step={1} 
+                  onValueChange={(v: number[]) => setFontSize(v[0])} 
+                />
+              </div>
+
+              {/* Auto Scroll/Flip Speed */}
+              <div className="space-y-4 pt-4 border-t border-muted-foreground/10">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <FastForward className="w-4 h-4 text-primary" />
+                    <span className="text-sm font-semibold">自动翻页设置</span>
+                  </div>
+                  <Button 
+                    variant={autoScrollSpeed > 0 ? "default" : "outline"} 
+                    size="sm" 
+                    className="h-7 px-3 text-[10px] rounded-full"
+                    onClick={() => setAutoScrollSpeed(prev => prev > 0 ? 0 : 20)}
+                  >
+                    {autoScrollSpeed > 0 ? "运行中" : "已停止"}
+                  </Button>
+                </div>
+                
+                <div className="space-y-4 px-1">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-muted-foreground">
+                      {flipMode === 'scroll' ? '滚动速度' : '翻页间隔'}
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <Button 
+                        variant="ghost" 
+                        size="icon" 
+                        className="h-6 w-6 rounded-full border"
+                        onClick={() => setAutoScrollSpeed(prev => Math.max(0, prev - 5))}
+                      >
+                        <span className="text-xs">-</span>
+                      </Button>
+                      <span className="text-xs font-mono w-6 text-center">{autoScrollSpeed}</span>
+                      <Button 
+                        variant="ghost" 
+                        size="icon" 
+                        className="h-6 w-6 rounded-full border"
+                        onClick={() => setAutoScrollSpeed(prev => Math.min(100, prev + 5))}
+                      >
+                        <span className="text-xs">+</span>
+                      </Button>
+                    </div>
+                  </div>
+                  <Slider 
+                    value={[autoScrollSpeed]} 
+                    min={0} 
+                    max={100} 
+                    step={1} 
+                    onValueChange={(v: number[]) => setAutoScrollSpeed(v[0])} 
+                  />
+                  <div className="flex justify-between items-center bg-secondary/30 p-2 rounded-lg">
+                    <p className="text-[10px] text-muted-foreground italic">
+                      {flipMode === 'scroll' 
+                        ? '流畅滚动模式：数值越大滚动速度越快。' 
+                        : `整页模式：每一页停留约 ${Math.round((105 - autoScrollSpeed) * 0.15)} 秒。`}
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* TTS Reading Rate */}
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Volume2 className="w-4 h-4" />
+                    <span className="text-sm font-medium">朗读语速</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button 
+                      variant="outline" 
+                      size="icon" 
+                      className="h-8 w-8"
+                      onClick={() => setReadingRate(prev => Math.max(0.5, Math.round((prev - 0.1) * 10) / 10))}
+                    >
+                      -
+                    </Button>
+                    <span className="text-sm font-mono w-8 text-center">{readingRate.toFixed(1)}</span>
+                    <Button 
+                      variant="outline" 
+                      size="icon" 
+                      className="h-8 w-8"
+                      onClick={() => setReadingRate(prev => Math.min(2.0, Math.round((prev + 0.1) * 10) / 10))}
+                    >
+                      +
+                    </Button>
+                  </div>
+                </div>
+                <Slider 
+                  value={[readingRate]} 
+                  min={0.5} 
+                  max={2.0} 
+                  step={0.1} 
+                  onValueChange={(v: number[]) => setReadingRate(v[0])} 
+                />
+              </div>
+
+              {/* Sleep Timer */}
+              <div className="space-y-4">
+                <div className="flex items-center gap-2">
+                  <Timer className="w-4 h-4" />
+                  <span className="text-sm font-medium">定时停止</span>
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  {[15, 30, 60].map(mins => (
+                    <Button 
+                      key={mins}
+                      variant={sleepTimer === mins ? "default" : "outline"}
+                      size="sm"
+                      onClick={() => startTimer(mins)}
+                    >
+                      {mins} 分钟
+                    </Button>
+                  ))}
+                  <Button 
+                    variant="outline" 
+                    size="sm" 
+                    className="col-span-3"
+                    onClick={() => {
+                      setSleepTimer(null);
+                      setTimeLeft(null);
+                    }}
+                  >
+                    取消定时
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </motion.div>
   );
 }
