@@ -47,7 +47,8 @@ import {
   SheetContent, 
   SheetHeader, 
   SheetTitle, 
-  SheetTrigger 
+  SheetTrigger,
+  SheetClose 
 } from '@/components/ui/sheet';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
@@ -1105,20 +1106,21 @@ function ReaderView({ book, onBack, updateProgress }: {
                 {chapters.length > 0 ? (
                   <div className="space-y-1">
                     {chapters.map((chapter, idx) => (
-                      <Button
-                        key={idx}
-                        variant="ghost"
-                        className="w-full justify-start text-left font-normal h-auto py-3 px-4 hover:bg-primary/10"
-                        onClick={() => {
-                          virtuosoRef.current?.scrollToIndex({
-                            index: chapter.index,
-                            align: 'start',
-                            behavior: 'smooth'
-                          });
-                        }}
-                      >
-                        <span className="line-clamp-2">{chapter.title}</span>
-                      </Button>
+                      <SheetClose asChild key={idx}>
+                        <Button
+                          variant="ghost"
+                          className="w-full justify-start text-left font-normal h-auto py-3 px-4 hover:bg-primary/10"
+                          onClick={() => {
+                            virtuosoRef.current?.scrollToIndex({
+                              index: chapter.index,
+                              align: 'start',
+                              behavior: 'auto'
+                            });
+                          }}
+                        >
+                          <span className="line-clamp-2">{chapter.title}</span>
+                        </Button>
+                      </SheetClose>
                     ))}
                   </div>
                 ) : (
