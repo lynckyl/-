@@ -221,6 +221,12 @@ function LibraryView({ books, onImport, onOpen, onDelete, onUpdateMetadata }: {
     accept: { 'text/plain': ['.txt'] }
   } as any);
 
+  const sortLabels: Record<SortField, string> = {
+    importTime: '最近导入',
+    name: '书名排序',
+    author: '作者排序'
+  };
+
   const filteredAndSortedBooks = useMemo(() => {
     return books
       .filter(book => {
@@ -265,7 +271,7 @@ function LibraryView({ books, onImport, onOpen, onDelete, onUpdateMetadata }: {
           <Select value={sortField} onValueChange={(v) => setSortField(v as SortField)}>
             <SelectTrigger className="w-[160px]">
               <SortAsc className="w-4 h-4 mr-2" />
-              <SelectValue placeholder="排序方式" />
+              <SelectValue>{sortLabels[sortField]}</SelectValue>
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="importTime">最近导入</SelectItem>
@@ -370,6 +376,10 @@ function LibraryView({ books, onImport, onOpen, onDelete, onUpdateMetadata }: {
           }} 
         />
       )}
+
+      <footer className="mt-16 pb-8 text-center">
+        <p className="text-xs text-muted-foreground font-mono">v1.0.0</p>
+      </footer>
     </motion.div>
   );
 }
@@ -1197,6 +1207,10 @@ function ReaderView({ book, onBack, updateProgress }: {
                     取消定时
                   </Button>
                 </div>
+              </div>
+
+              <div className="pt-4 border-t border-muted-foreground/10 text-center">
+                <p className="text-[10px] font-mono text-muted-foreground opacity-50">悦读 v1.0.0</p>
               </div>
             </div>
           </motion.div>
