@@ -162,10 +162,18 @@
     }
   body {
     @apply bg-background text-foreground;
-    }
+    height: 100%;
+    overflow: hidden;
+    -webkit-overflow-scrolling: touch;
+  }
   html {
     @apply font-sans;
-    }
+    -webkit-tap-highlight-color: transparent;
+    height: 100%;
+  }
+  #root {
+    height: 100%;
+  }
 }
 
 @layer utilities {

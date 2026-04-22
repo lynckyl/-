@@ -781,8 +781,22 @@ function ReaderView({ book, onBack, updateProgress }: {
     };
   }, []);
 
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
   const [fontSize, setFontSize] = useState(savedSettings.fontSize);
+  const [tempFontSize, setTempFontSize] = useState(fontSize);
   const fontSizeRef = useRef(fontSize);
+  const readerContainerRef = useRef<HTMLDivElement>(null);
+
+  // Sync font size to CSS variable for high-performance adjustment
+  useEffect(() => {
+    if (readerContainerRef.current) {
+      readerContainerRef.current.style.setProperty('--reader-font-size', `${tempFontSize}px`);
+    }
+  }, [tempFontSize]);
+
+  useEffect(() => {
+    setTempFontSize(fontSize);
+  }, [fontSize]);
   const [fontFamily, setFontFamily] = useState<'sans' | 'serif' | 'mono' | 'kaiti'>(savedSettings.fontFamily);
   const [theme, setTheme] = useState<'light' | 'dark' | 'sepia'>(savedSettings.theme);
   const [flipMode, setFlipMode] = useState<'scroll' | 'page'>(savedSettings.flipMode);
@@ -863,6 +877,33 @@ function ReaderView({ book, onBack, updateProgress }: {
   const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const ttsTimeoutRef = useRef<number | null>(null);
+  const watchdogTimeoutRef = useRef<number | null>(null);
+  const resumeIntervalRef = useRef<number | null>(null);
+  const topItemIndexRef = useRef(0);
+
+  const getCurrentTopIndex = useCallback(() => {
+    if (!scrollContainerRef.current || !readerContainerRef.current) return topItemIndexRef.current;
+    
+    // On iOS, we need to be more precise about the viewport offset
+    const containerRect = scrollContainerRef.current.getBoundingClientRect();
+    const centerX = containerRect.left + containerRect.width / 2;
+    
+    // We check the point slightly below the header
+    const searchTop = containerRect.top + 20; 
+    
+    // Points relative to the container top. 
+    // Checking multiple points to ensure we hit a paragraph even if there's spacing.
+    const ySteps = [5, 30, 60, 100, 150, 250];
+    for (const y of ySteps) {
+      const el = document.elementFromPoint(centerX, searchTop + y);
+      const p = el?.closest('p[id^="p-"]');
+      if (p) {
+        const idx = parseInt(p.id.replace('p-', ''), 10);
+        if (!isNaN(idx)) return idx;
+      }
+    }
+    return visibleRangeRef.current.startIndex;
+  }, []);
 
   // Keep refs in sync
   useEffect(() => {
@@ -927,7 +968,7 @@ function ReaderView({ book, onBack, updateProgress }: {
   }, [autoScrollSpeed, animate]);
 
   // TTS Logic
-  const readNextParagraph = useCallback((index: number) => {
+  const readNextParagraph = useCallback((index: number, immediate = false) => {
     if (index >= paragraphs.length) {
       setIsReading(false);
       setActiveParagraphIndex(null);
@@ -942,7 +983,11 @@ function ReaderView({ book, onBack, updateProgress }: {
 
     // Clear any pending utterances first to avoid triggering stale onend/onerror
     synth.cancel();
-    if (synth.paused) synth.resume();
+    
+    // iOS specific: Wait for cancel to propagate and force a resume
+    if (isIOS) {
+      synth.resume(); 
+    }
 
     setActiveParagraphIndex(index);
     activeIndexRef.current = index;
@@ -970,11 +1015,37 @@ function ReaderView({ book, onBack, updateProgress }: {
     utterance.onstart = () => {
       if (utteranceRef.current !== utterance) return;
       if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing';
+      
+      // Clear any previous watchdog
+      if (watchdogTimeoutRef.current) window.clearTimeout(watchdogTimeoutRef.current);
+      
+      // Safety watchdog: Estimate duration + 5s buffer. if onend doesn't fire, move forward.
+      // Avg reading speed is ~300 chars/min, so ~200ms per char at 1x rate. 
+      const estimatedDuration = (text.length * (200 / readingRateRef.current)) + 5000;
+      watchdogTimeoutRef.current = window.setTimeout(() => {
+        if (utteranceRef.current === utterance && isReadingRef.current) {
+          console.warn("TTS Watchdog triggered for paragraph", index);
+          utterance.onend?.(new SpeechSynthesisEvent('end', { utterance }));
+        }
+      }, estimatedDuration);
+
+      // Start periodic resume hack (every 10s) to prevent engine from pausing automatically
+      if (resumeIntervalRef.current) window.clearInterval(resumeIntervalRef.current);
+      resumeIntervalRef.current = window.setInterval(() => {
+        if (synth.speaking && !synth.paused) {
+          synth.pause();
+          synth.resume();
+        }
+      }, 10000);
     };
     
     utterance.onend = () => {
       // Robust check: only continue if this is still the active utterance
       if (utteranceRef.current !== utterance) return;
+      
+      // Clear watchdog and interval
+      if (watchdogTimeoutRef.current) window.clearTimeout(watchdogTimeoutRef.current);
+      if (resumeIntervalRef.current) window.clearInterval(resumeIntervalRef.current);
       
       // Update progress as we read
       updateProgress(scrollContainerRef.current?.scrollTop || 0, index);
@@ -994,6 +1065,9 @@ function ReaderView({ book, onBack, updateProgress }: {
 
     utterance.onerror = (event) => {
       if (utteranceRef.current !== utterance) return;
+      if (watchdogTimeoutRef.current) window.clearTimeout(watchdogTimeoutRef.current);
+      if (resumeIntervalRef.current) window.clearInterval(resumeIntervalRef.current);
+      
       // 'interrupted' is normal when we cancel, skip clearing state
       if (event.error === 'interrupted') return;
       
@@ -1006,10 +1080,20 @@ function ReaderView({ book, onBack, updateProgress }: {
 
     utteranceRef.current = utterance;
     
-    // Some mobile browsers need a small delay after cancel() for the new utterance to be heard
-    setTimeout(() => {
+    if (immediate) {
+      // Synchronous call for user gesture reliability on iOS
       synth.speak(utterance);
-    }, 50);
+    } else {
+      // iOS Safari can be finicky about consecutive speak calls.
+      // Small delays and explicit resume help keep the worker alive.
+      if (ttsTimeoutRef.current) window.clearTimeout(ttsTimeoutRef.current);
+      ttsTimeoutRef.current = window.setTimeout(() => {
+        if (isReadingRef.current) {
+          if (synth.paused) synth.resume();
+          synth.speak(utterance);
+        }
+      }, isIOS ? 100 : 50);
+    }
 
     // Only scroll if the paragraph is outside or near the bottom of the visible range
     const { startIndex, endIndex } = visibleRangeRef.current;
@@ -1028,6 +1112,9 @@ function ReaderView({ book, onBack, updateProgress }: {
     if (isReading) {
       synth.cancel();
       if (ttsTimeoutRef.current) window.clearTimeout(ttsTimeoutRef.current);
+      if (watchdogTimeoutRef.current) window.clearTimeout(watchdogTimeoutRef.current);
+      if (resumeIntervalRef.current) window.clearInterval(resumeIntervalRef.current);
+      
       setIsReading(false);
       setActiveParagraphIndex(null);
       activeIndexRef.current = null;
@@ -1037,21 +1124,29 @@ function ReaderView({ book, onBack, updateProgress }: {
       }
       if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'paused';
     } else {
-      // Always start reading from the first currently visible paragraph
-      const startIndex = visibleRangeRef.current.startIndex;
+      // Start silent audio immediately in user gesture stack to unlock TTS/MediaSession on iOS
+      if (audioRef.current) {
+        audioRef.current.play().catch(e => console.log("Audio play failed:", e));
+      }
+
+      // Reset any active timers
+      if (ttsTimeoutRef.current) window.clearTimeout(ttsTimeoutRef.current);
+      if (watchdogTimeoutRef.current) window.clearTimeout(watchdogTimeoutRef.current);
+      if (resumeIntervalRef.current) window.clearInterval(resumeIntervalRef.current);
+
+      // CRITICAL FIX: Use the precise visible top index detection
+      const startIndex = getCurrentTopIndex();
       
       // Clear queue and resume to fix common mobile browser TTS bugs
       synth.cancel();
       if (synth.paused) synth.resume();
       
-      readNextParagraph(startIndex); 
+      // Pass immediate=true to bypass the setTimeout for the first speak call
+      readNextParagraph(startIndex, true); 
       setIsReading(true);
-      if (audioRef.current) {
-        audioRef.current.play().catch(e => console.log("Audio play failed:", e));
-      }
       if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing';
     }
-  }, [isReading, readNextParagraph, synth]);
+  }, [isReading, readNextParagraph, synth, getCurrentTopIndex]);
 
   // Voice/Rate sync and immediate feedback with debounce
   const rateSyncTimeoutRef = useRef<number | null>(null);
@@ -1131,8 +1226,20 @@ function ReaderView({ book, onBack, updateProgress }: {
     setTimeLeft(mins * 60);
   };
 
+  // Reset tracking when book changes
+  const lastBookIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (book.id && book.id !== lastBookIdRef.current) {
+      lastBookIdRef.current = book.id;
+      topItemIndexRef.current = book.lastParagraphIndex || 0;
+    }
+  }, [book.id, book.lastParagraphIndex]);
+
   // Restore position when paragraphs are ready
   const hasRestoredRef = useRef(false);
+  useEffect(() => {
+    hasRestoredRef.current = false; // Reset restoration flag when book changes
+  }, [book.id]);
   useEffect(() => {
     if (paragraphs.length > 0 && virtuosoRef.current && !hasRestoredRef.current) {
       hasRestoredRef.current = true;
@@ -1140,6 +1247,8 @@ function ReaderView({ book, onBack, updateProgress }: {
       const targetPos = book.lastPosition;
 
       if (targetIndex > 0) {
+        // Ensure our tracking ref is updated immediately
+        topItemIndexRef.current = targetIndex;
         // Use paragraph index for more precise restoration in virtualized lists
         virtuosoRef.current.scrollToIndex({
           index: targetIndex,
@@ -1158,10 +1267,11 @@ function ReaderView({ book, onBack, updateProgress }: {
   const handleScroll = useCallback((scrollTop: number) => {
     if (scrollTimeoutRef.current) window.clearTimeout(scrollTimeoutRef.current);
     scrollTimeoutRef.current = window.setTimeout(() => {
-      // Use the ref directly to avoid stale range info
-      updateProgress(scrollTop, visibleRangeRef.current.startIndex);
+      // Use accurate detection for progress saving too
+      const topIdx = getCurrentTopIndex();
+      updateProgress(scrollTop, topIdx);
     }, 500);
-  }, [updateProgress]);
+  }, [updateProgress, getCurrentTopIndex]);
 
   const isReadingRef = useRef(isReading);
   useEffect(() => {
@@ -1173,6 +1283,8 @@ function ReaderView({ book, onBack, updateProgress }: {
     return () => {
       if (scrollTimeoutRef.current) window.clearTimeout(scrollTimeoutRef.current);
       if (ttsTimeoutRef.current) window.clearTimeout(ttsTimeoutRef.current);
+      if (watchdogTimeoutRef.current) window.clearTimeout(watchdogTimeoutRef.current);
+      if (resumeIntervalRef.current) window.clearInterval(resumeIntervalRef.current);
       if (rateSyncTimeoutRef.current) window.clearTimeout(rateSyncTimeoutRef.current);
       if (requestRef.current) cancelAnimationFrame(requestRef.current);
       if (utteranceRef.current) {
@@ -1272,7 +1384,10 @@ function ReaderView({ book, onBack, updateProgress }: {
       </header>
 
       {/* Content */}
-      <div className="flex-1 overflow-hidden relative">
+      <div 
+        ref={readerContainerRef}
+        className="flex-1 overflow-hidden relative"
+      >
         {!content ? (
           <div className="absolute inset-0 flex items-center justify-center">
             <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
@@ -1287,7 +1402,10 @@ function ReaderView({ book, onBack, updateProgress }: {
             }}
             onScroll={(e) => handleScroll((e.target as HTMLDivElement).scrollTop)}
             itemContent={(idx, para) => (
-              <div className="px-6 py-2 md:px-12 lg:px-24">
+              <div 
+                className="px-6 py-2 md:px-12 lg:px-24"
+                style={{ touchAction: 'pan-y' }} // Help iOS touch performance
+              >
                 <p 
                   id={`p-${idx}`}
                   className={cn(
@@ -1298,7 +1416,10 @@ function ReaderView({ book, onBack, updateProgress }: {
                       ? "bg-primary/20 text-primary scale-[1.02] shadow-sm" 
                       : "opacity-100"
                   )}
-                  style={{ fontSize: `${fontSize}px`, lineHeight: '1.8' }}
+                  style={{ 
+                    fontSize: 'var(--reader-font-size)', 
+                    lineHeight: '1.8'
+                  }}
                 >
                   {para}
                 </p>
@@ -1311,11 +1432,11 @@ function ReaderView({ book, onBack, updateProgress }: {
 
       {/* Footer Controls */}
       <footer className={cn("h-20 border-t flex items-center justify-center gap-8 px-6 transition-colors duration-300", themeConfig[theme].bg, themeConfig[theme].border)}>
-        {/* Silent audio to keep MediaSession alive */}
+        {/* Silent audio to keep MediaSession / Speech alive on iOS */}
         <audio 
           ref={audioRef} 
           loop 
-          src="data:audio/wav;base64,UklGRigAAABXQVZFRm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQQAAAAAAA== "
+          src="data:audio/wav;base64,UklGRigAAABXQVZFRm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQQAAAAAAA=="
         />
         <Button 
           variant={autoScrollSpeed > 0 ? "default" : "outline"} 
@@ -1479,27 +1600,37 @@ function ReaderView({ book, onBack, updateProgress }: {
                       variant="outline" 
                       size="icon" 
                       className="h-8 w-8"
-                      onClick={() => setFontSize(prev => Math.max(12, prev - 2))}
+                      onClick={() => {
+                        const next = Math.max(12, fontSize - 2);
+                        setFontSize(next);
+                        setTempFontSize(next);
+                      }}
                     >
                       -
                     </Button>
-                    <span className="text-sm font-mono w-8 text-center">{fontSize}</span>
+                    <span className="text-sm font-mono w-8 text-center">{tempFontSize}</span>
                     <Button 
                       variant="outline" 
                       size="icon" 
                       className="h-8 w-8"
-                      onClick={() => setFontSize(prev => Math.min(40, prev + 2))}
+                      onClick={() => {
+                        const next = Math.min(40, fontSize + 2);
+                        setFontSize(next);
+                        setTempFontSize(next);
+                      }}
                     >
                       +
                     </Button>
                   </div>
                 </div>
                 <Slider 
-                  value={[fontSize]} 
+                  value={[tempFontSize]} 
                   min={12} 
                   max={40} 
                   step={1} 
-                  onValueChange={(v: number[]) => setFontSize(v[0])} 
+                  onValueChange={(v: number[]) => setTempFontSize(v[0])}
+                  // @ts-ignore - Radix Slider has onValueCommit
+                  onValueCommit={(v: number[]) => setFontSize(v[0])}
                 />
               </div>
 
