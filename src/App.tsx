@@ -882,27 +882,36 @@ function ReaderView({ book, onBack, updateProgress }: {
   const topItemIndexRef = useRef(0);
 
   const getCurrentTopIndex = useCallback(() => {
-    if (!scrollContainerRef.current || !readerContainerRef.current) return topItemIndexRef.current;
+    const container = readerContainerRef.current;
+    if (!container) return topItemIndexRef.current;
     
-    // On iOS, we need to be more precise about the viewport offset
-    const containerRect = scrollContainerRef.current.getBoundingClientRect();
-    const centerX = containerRect.left + containerRect.width / 2;
-    
-    // We check the point slightly below the header
-    const searchTop = containerRect.top + 20; 
-    
-    // Points relative to the container top. 
-    // Checking multiple points to ensure we hit a paragraph even if there's spacing.
-    const ySteps = [5, 30, 60, 100, 150, 250];
-    for (const y of ySteps) {
-      const el = document.elementFromPoint(centerX, searchTop + y);
-      const p = el?.closest('p[id^="p-"]');
-      if (p) {
-        const idx = parseInt(p.id.replace('p-', ''), 10);
-        if (!isNaN(idx)) return idx;
+    try {
+      const containerRect = container.getBoundingClientRect();
+      
+      // Query all paragraph elements rendered in the current document
+      const pElements = document.querySelectorAll('p[id^="p-"]');
+      
+      // Find the first paragraph that is visible at the top of the reader viewport
+      for (let i = 0; i < pElements.length; i++) {
+        const el = pElements[i] as HTMLElement;
+        const rect = el.getBoundingClientRect();
+        
+        // If the bottom of this paragraph is below the container top,
+        // it means this is the first visible (or partially visible) paragraph.
+        // We use a safe threshold of +12px to account for header heights/spacing.
+        if (rect.bottom > containerRect.top + 12) {
+          const idx = parseInt(el.id.replace('p-', ''), 10);
+          if (!isNaN(idx)) {
+            topItemIndexRef.current = idx;
+            return idx;
+          }
+        }
       }
+    } catch (e) {
+      console.error("Failed to detect visible paragraph:", e);
     }
-    return visibleRangeRef.current.startIndex;
+    
+    return topItemIndexRef.current;
   }, []);
 
   // Keep refs in sync
