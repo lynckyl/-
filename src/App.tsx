@@ -36,7 +36,10 @@ import {
   Loader2,
   FolderOpen,
   Smartphone,
-  Share2
+  Share2,
+  Copy,
+  Highlighter,
+  Check
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Button } from '@/components/ui/button';
@@ -79,6 +82,46 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { cn } from '@/lib/utils';
 
+const DEFAULT_MANUAL_TXT = `第一章：极简电子书《悦读》操作说明
+
+欢迎使用《悦读》！这是一款为您量身定制的极简、纯粹且功能齐备的经典文本阅读工具。
+
+在这里，我们特别为您配置了如下纯享体验：
+1. 【高质听书（有声朗读）】：点击下方工具栏的“朗读”，能够直接驱动系统级高质量语音为您有声悦读，支持调节语速、声调，并自带自动划词跟读轨迹！
+2. 【段落快捷操作】：点击本行或任何您喜欢、关注的段落，均可在页面下边缘弹起极简“段落微工具”，允许您对单独的一段进行“荧光笔着色高亮”、“复制这行文字”或者直接跳转“由此朗读”！
+3. 【自适应滚动/自动翻页】：解放双手的神器！一键设定无级滚动或整页等待时间，由我们贴心的缓降动画为您温柔推送接下来的行文！
+4. 【睡眠倒计时】：担心看书看听书不知不觉睡着？点击最下方时钟标志启动 15/30/45/60 分钟等定时。到点后，我们将无声渐变关闭 TTS 和轻缓下沉页面，体贴守护。
+
+第二章：现代抒情名篇之一・背影
+
+作者：朱自清
+
+我与父亲不相见已二年余了，我最不能忘记的是他的背影。那年冬天，祖母死了，父亲的差使也交卸了，正是祸不单行。我从北京到徐州，打算跟着父亲奔丧回家。到徐州见着父亲，看见满院狼藉的东西，又想起祖母，不禁簌簌地流下眼泪。父亲说：“事已至此，不必难过，好在天无绝人之路！”
+
+回家变卖典质，父亲还了亏空；又借钱办了丧事。这些日子，家中光景很是惨淡，一半为了丧事，一半为了父亲赋闲。丧事完毕，父亲要到南京谋事，我也要回北京念书，我们便同行。
+
+到南京时，有朋友约去游逛，勾留了一日；第二日上午便须渡江到浦口，下午上车北去。父亲因为事忙，本已说定不送我，叫旅馆里一个熟识的茶房陪我同去。他再三嘱咐茶房，甚是仔细。但他终于不放心，怕茶房不妥帖；颇踌躇了一会。其实我那年已二十岁，北京已来往过两三次，是没有什么要紧的了。他踌躇了一会，终于决定还是自己送我去。我再三劝他不必去；他只说：“不要紧，他们去不好！”
+
+第三章：经典古诗漫步
+
+【江城子】・苏轼
+十年生死两茫茫，不思量，自难忘。
+千里孤坟，无处话凄凉。
+纵使相逢应不识，尘满面，鬓如霜。
+夜来幽梦忽还乡，小轩窗，正梳妆。
+相顾无言，惟有泪千行。
+料得年年肠断处，明月夜，短松冈。
+
+【念奴娇・赤壁怀古】・苏轼
+大江东去，浪淘尽，千古风流人物。
+故垒西边，人道是，三国周郎壁。
+乱石穿空，惊涛拍岸，卷起千堆雪。
+江山如画，一时多少豪杰。
+遥想公瑾当年，小乔初嫁了，雄姿英发。
+羽扇纶巾，谈笑间，樯橹灰飞烟灭。
+故国神游，多情应笑我，早生华发。
+人生如梦，一尊还鈹江月。`;
+
 interface BookData {
   id: string;
   name: string;
@@ -96,16 +139,32 @@ export default function App() {
   const [books, setBooks] = useState<BookData[]>(() => {
     try {
       const saved = localStorage.getItem('yuedu_books');
-      const parsed = saved ? JSON.parse(saved) : [];
-      // Migrate old data to include new mandatory fields
-      return parsed.map((b: any) => ({
-        ...b,
-        tags: b.tags || [],
-        importTime: b.importTime || Date.now(),
-        author: b.author || '',
-        lastPosition: b.lastPosition || 0,
-        lastParagraphIndex: b.lastParagraphIndex || 0
-      }));
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed && Array.isArray(parsed) && parsed.length > 0) {
+          return parsed.map((b: any) => ({
+            ...b,
+            tags: b.tags || [],
+            importTime: b.importTime || Date.now(),
+            author: b.author || '',
+            lastPosition: b.lastPosition || 0,
+            lastParagraphIndex: b.lastParagraphIndex || 0
+          }));
+        }
+      }
+      
+      // Inject sample book on empty load
+      const sampleBookId = 'sample-book-yuedu';
+      return [{
+        id: sampleBookId,
+        name: '《悦读》简明手册与古今佳作',
+        author: '悦读工作室',
+        tags: ['经典', '新手指南', '预装'],
+        importTime: Date.now(),
+        contentSize: DEFAULT_MANUAL_TXT.length,
+        lastPosition: 0,
+        lastParagraphIndex: 0
+      }];
     } catch (e) {
       console.error("Failed to load books from localStorage:", e);
       return [];
@@ -114,10 +173,24 @@ export default function App() {
   const [currentBookId, setCurrentBookId] = useState<string | null>(null);
   const [view, setView] = useState<'library' | 'reader'>('library');
 
-  // Persistence
+  // Persistence and Default Book DB Seed
   useEffect(() => {
     localStorage.setItem('yuedu_books', JSON.stringify(books));
   }, [books]);
+
+  useEffect(() => {
+    const seedDefaultBook = async () => {
+      try {
+        const existing = await getBookContent('sample-book-yuedu');
+        if (!existing) {
+          await saveBookContent('sample-book-yuedu', DEFAULT_MANUAL_TXT);
+        }
+      } catch (err) {
+        console.error("Failed to seed default book content in IndexedDB:", err);
+      }
+    };
+    seedDefaultBook();
+  }, []);
 
   const currentBook = books.find(b => b.id === currentBookId);
 
@@ -227,7 +300,7 @@ export default function App() {
           />
         ) : (
           <ReaderView 
-            key="reader"
+            key={`reader-${currentBookId}`}
             book={currentBook!} 
             onBack={() => setView('library')} 
             updateProgress={(pos, paraIdx) => {
@@ -367,11 +440,11 @@ function LibraryView({ books, onImport, onOpen, onDelete, onUpdateMetadata, onAd
               </div>
               
               <DropdownMenu>
-                <DropdownMenuTrigger render={
+                <DropdownMenuTrigger asChild>
                   <Button variant="ghost" size="icon" className="h-8 w-8">
                     <MoreVertical className="w-4 h-4" />
                   </Button>
-                } />
+                </DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
                   <DropdownMenuItem onClick={() => setEditingBook(book)}>
                     编辑信息
@@ -432,7 +505,7 @@ function LibraryView({ books, onImport, onOpen, onDelete, onUpdateMetadata, onAd
       )}
 
       <footer className="mt-16 pb-8 text-center">
-        <p className="text-xs text-muted-foreground font-mono">v1.0.0</p>
+        <p className="text-xs text-muted-foreground font-mono">v1.0.1</p>
       </footer>
     </motion.div>
   );
@@ -800,6 +873,26 @@ function ReaderView({ book, onBack, updateProgress }: {
   const [fontFamily, setFontFamily] = useState<'sans' | 'serif' | 'mono' | 'kaiti'>(savedSettings.fontFamily);
   const [theme, setTheme] = useState<'light' | 'dark' | 'sepia'>(savedSettings.theme);
   const [flipMode, setFlipMode] = useState<'scroll' | 'page'>(savedSettings.flipMode);
+
+  // Optimization 2 states: Persistent highlights and selected paragraph operations
+  const [highlights, setHighlights] = useState<number[]>(() => {
+    try {
+      const saved = localStorage.getItem(`yuedu_highlights_${book.id}`);
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [selectedParagraphIndex, setSelectedParagraphIndex] = useState<number | null>(null);
+  const [showCopiedToast, setShowCopiedToast] = useState(false);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(`yuedu_highlights_${book.id}`, JSON.stringify(highlights));
+    } catch (e) {
+      console.error("Failed to persist highlights:", e);
+    }
+  }, [highlights, book.id]);
   const [voiceURI, setVoiceURI] = useState<string>(savedSettings.voiceURI);
   const voiceURIRef = useRef(voiceURI);
   const [availableVoices, setAvailableVoices] = useState<SpeechSynthesisVoice[]>([]);
@@ -819,13 +912,27 @@ function ReaderView({ book, onBack, updateProgress }: {
   }, [content]);
 
   const chapters = useMemo(() => {
-    const chapterRegex = /^\s*(第[一二三四五六七八九十百千万\d]+[章节回].*|Chapter\s+\d+.*|正文\s+.*|序言|前言|后记|番外.*)\s*$/;
-    return paragraphs.reduce((acc, para, index) => {
+    const chapterRegex = /^\s*(第[一二三四五六七八九十百千万\d\s]+[章节回部集卷篇幕].*|Chapter\s+\d+.*|Part\s+[\dIVXLCDM]+.*|正文\s+.*|序言|前言|后记|结语|尾声|番外.*)\s*$/i;
+    const found = paragraphs.reduce((acc, para, index) => {
       if (chapterRegex.test(para)) {
         acc.push({ title: para.trim(), index });
       }
       return acc;
     }, [] as { title: string, index: number }[]);
+    
+    // Fallback: If no custom chapters are found in standard TXT ebooks, generate 10 proportional navigation checkpoints!
+    if (found.length === 0 && paragraphs.length > 30) {
+      const step = Math.ceil(paragraphs.length / 10);
+      for (let i = 0; i < paragraphs.length; i += step) {
+        // Use a preview of paragraph text
+        const textPreview = paragraphs[i].slice(0, 15).trim() + (paragraphs[i].length > 15 ? '...' : '');
+        found.push({
+          title: `进程 ${Math.floor(i / step) * 10}% (${textPreview || '段落'})`,
+          index: i
+        });
+      }
+    }
+    return found;
   }, [paragraphs]);
 
   // Keep fontSizeRef in sync
@@ -883,23 +990,33 @@ function ReaderView({ book, onBack, updateProgress }: {
 
   const getCurrentTopIndex = useCallback(() => {
     const container = readerContainerRef.current;
-    if (!container) return topItemIndexRef.current;
+    
+    // Choose the best fallback in descending order of contextual freshness:
+    // 1. Virtuoso's currently reported rendering start index (if scrolled)
+    // 2. The tracking reference index (e.g. from restored database position)
+    const fallbackIndex = visibleRangeRef.current.startIndex > 0 
+      ? visibleRangeRef.current.startIndex 
+      : topItemIndexRef.current;
+      
+    if (!container) return fallbackIndex;
     
     try {
       const containerRect = container.getBoundingClientRect();
+      const triggerY = containerRect.top + 20; // 20px threshold from top of the reading window
       
-      // Query all paragraph elements rendered in the current document
-      const pElements = document.querySelectorAll('p[id^="p-"]');
+      // Query all rendered paragraphs inside our specific container view
+      const pElements = container.querySelectorAll('p[id^="p-"]');
+      if (pElements.length === 0) {
+        return fallbackIndex;
+      }
       
-      // Find the first paragraph that is visible at the top of the reader viewport
+      // Find the first paragraph whose bottom edge is below our top boundary trigger
       for (let i = 0; i < pElements.length; i++) {
         const el = pElements[i] as HTMLElement;
         const rect = el.getBoundingClientRect();
         
-        // If the bottom of this paragraph is below the container top,
-        // it means this is the first visible (or partially visible) paragraph.
-        // We use a safe threshold of +12px to account for header heights/spacing.
-        if (rect.bottom > containerRect.top + 12) {
+        // If the bottom edge of this paragraph text is below our trigger line, it is visible!
+        if (rect.bottom > triggerY) {
           const idx = parseInt(el.id.replace('p-', ''), 10);
           if (!isNaN(idx)) {
             topItemIndexRef.current = idx;
@@ -911,7 +1028,7 @@ function ReaderView({ book, onBack, updateProgress }: {
       console.error("Failed to detect visible paragraph:", e);
     }
     
-    return topItemIndexRef.current;
+    return fallbackIndex;
   }, []);
 
   // Keep refs in sync
@@ -1157,6 +1274,26 @@ function ReaderView({ book, onBack, updateProgress }: {
     }
   }, [isReading, readNextParagraph, synth, getCurrentTopIndex]);
 
+  const startReadingFromIndex = useCallback((index: number) => {
+    if (audioRef.current) {
+      audioRef.current.play().catch(e => console.log("Audio play failed:", e));
+    }
+    if (ttsTimeoutRef.current) window.clearTimeout(ttsTimeoutRef.current);
+    if (watchdogTimeoutRef.current) window.clearTimeout(watchdogTimeoutRef.current);
+    if (resumeIntervalRef.current) window.clearInterval(resumeIntervalRef.current);
+    synth.cancel();
+    if (synth.paused) synth.resume();
+    readNextParagraph(index, true); 
+    setIsReading(true);
+    if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing';
+  }, [readNextParagraph, synth]);
+
+  const toggleHighlight = useCallback((index: number) => {
+    setHighlights(prev => 
+      prev.includes(index) ? prev.filter(i => i !== index) : [...prev, index]
+    );
+  }, []);
+
   // Voice/Rate sync and immediate feedback with debounce
   const rateSyncTimeoutRef = useRef<number | null>(null);
   useEffect(() => {
@@ -1256,8 +1393,10 @@ function ReaderView({ book, onBack, updateProgress }: {
       const targetPos = book.lastPosition;
 
       if (targetIndex > 0) {
-        // Ensure our tracking ref is updated immediately
+        // Ensure our tracking ref and visible range are aligned immediately
         topItemIndexRef.current = targetIndex;
+        visibleRangeRef.current = { startIndex: targetIndex, endIndex: targetIndex + 5 };
+        
         // Use paragraph index for more precise restoration in virtualized lists
         virtuosoRef.current.scrollToIndex({
           index: targetIndex,
@@ -1336,8 +1475,10 @@ function ReaderView({ book, onBack, updateProgress }: {
         
         <div className="flex items-center gap-1">
           <Sheet>
-            <SheetTrigger render={<Button variant="ghost" size="icon" />}>
-              <List className="w-5 h-5" />
+            <SheetTrigger asChild>
+              <Button variant="ghost" size="icon">
+                <List className="w-5 h-5" />
+              </Button>
             </SheetTrigger>
             <SheetContent side="left" className={cn("w-[300px] sm:w-[400px]", themeConfig[theme].bg, themeConfig[theme].text, themeConfig[theme].border)}>
               <SheetHeader>
@@ -1410,33 +1551,146 @@ function ReaderView({ book, onBack, updateProgress }: {
               visibleRangeRef.current = range;
             }}
             onScroll={(e) => handleScroll((e.target as HTMLDivElement).scrollTop)}
-            itemContent={(idx, para) => (
-              <div 
-                className="px-6 py-2 md:px-12 lg:px-24"
-                style={{ touchAction: 'pan-y' }} // Help iOS touch performance
-              >
-                <p 
-                  id={`p-${idx}`}
-                  className={cn(
-                    "max-w-2xl mx-auto leading-relaxed text-justify transition-all duration-300 rounded-lg px-2 -mx-2",
-                    fontConfig[fontFamily],
-                    chapters.some(c => c.index === idx) ? "font-bold text-xl mt-8 mb-4 border-l-4 border-primary pl-4" : "mb-6",
-                    activeParagraphIndex === idx 
-                      ? "bg-primary/20 text-primary scale-[1.02] shadow-sm" 
-                      : "opacity-100"
-                  )}
-                  style={{ 
-                    fontSize: 'var(--reader-font-size)', 
-                    lineHeight: '1.8'
-                  }}
+            itemContent={(idx, para) => {
+              const isHighlighted = highlights.includes(idx);
+              const isSelected = selectedParagraphIndex === idx;
+              const isActive = activeParagraphIndex === idx;
+
+              return (
+                <div 
+                  className="px-6 py-2 md:px-12 lg:px-24"
+                  style={{ touchAction: 'pan-y' }} // Help iOS touch performance
                 >
-                  {para}
-                </p>
-              </div>
-            )}
+                  <p 
+                    id={`p-${idx}`}
+                    onClick={() => {
+                      setSelectedParagraphIndex(prev => prev === idx ? null : idx);
+                    }}
+                    className={cn(
+                      "max-w-2xl mx-auto leading-relaxed text-justify transition-all duration-300 rounded-lg px-2 -mx-2 cursor-pointer select-text",
+                      fontConfig[fontFamily],
+                      chapters.some(c => c.index === idx) ? "font-bold text-xl mt-8 mb-4 border-l-4 border-primary pl-4" : "mb-6",
+                      isActive 
+                        ? "bg-primary/25 text-primary scale-[1.012] shadow-sm font-semibold" 
+                        : "",
+                      isHighlighted 
+                        ? "bg-yellow-500/15 dark:bg-yellow-500/10 shadow-[inset_0_-3px_0_0_rgba(234,179,8,0.7)]" 
+                        : "",
+                      isSelected 
+                        ? "ring-2 ring-primary/40 bg-primary/5 shadow-md scale-[1.01]" 
+                        : "hover:bg-primary/5"
+                    )}
+                    style={{ 
+                      fontSize: 'var(--reader-font-size)', 
+                      lineHeight: '1.9'
+                    }}
+                  >
+                    {para}
+                  </p>
+                </div>
+              );
+            }}
             style={{ height: '100%' }}
           />
         )}
+
+        {/* Floating Toolbar for Selected Paragraph */}
+        <AnimatePresence>
+          {selectedParagraphIndex !== null && (
+            <motion.div
+              initial={{ opacity: 0, y: 30, scale: 0.95 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 20, scale: 0.95 }}
+              className="absolute bottom-6 left-1/2 -translate-x-1/2 z-50 w-[92%] max-w-lg bg-background/95 dark:bg-[#1c1c1e]/95 backdrop-blur-md border border-muted-foreground/10 shadow-xl rounded-2xl p-4 flex flex-col gap-3"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <span className="text-[10px] font-mono font-bold tracking-wider uppercase text-primary bg-primary/10 px-2 py-0.5 rounded-md">
+                  段落 #{selectedParagraphIndex + 1}
+                </span>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-6 w-6 rounded-full hover:bg-muted"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setSelectedParagraphIndex(null);
+                  }}
+                >
+                  <X className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+              
+              <p className="text-xs text-muted-foreground line-clamp-2 italic border-l-2 border-primary/30 pl-2 leading-relaxed">
+                "{paragraphs[selectedParagraphIndex]}"
+              </p>
+
+              <div className="flex items-center justify-between gap-2 mt-1">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="flex-1 gap-1.5 text-xs h-9 rounded-xl border-dashed"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    toggleHighlight(selectedParagraphIndex);
+                    setSelectedParagraphIndex(null);
+                  }}
+                >
+                  <Highlighter className="h-3.5 w-3.5 text-yellow-500" />
+                  {highlights.includes(selectedParagraphIndex) ? "取消高亮" : "高亮标记"}
+                </Button>
+
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="flex-1 gap-1.5 text-xs h-9 rounded-xl"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    startReadingFromIndex(selectedParagraphIndex);
+                    setSelectedParagraphIndex(null);
+                  }}
+                >
+                  <Volume2 className="h-3.5 w-3.5 text-primary animate-pulse" />
+                  由此朗读
+                </Button>
+
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="flex-1 gap-1.5 text-xs h-9 rounded-xl"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    try {
+                      navigator.clipboard.writeText(paragraphs[selectedParagraphIndex!]);
+                      setShowCopiedToast(true);
+                      setTimeout(() => setShowCopiedToast(false), 2000);
+                    } catch (err) {
+                      console.error("Failed to copy text:", err);
+                    }
+                    setSelectedParagraphIndex(null);
+                  }}
+                >
+                  <Copy className="h-3.5 w-3.5 text-blue-500" />
+                  复制段落
+                </Button>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Copy confirmation notification */}
+        <AnimatePresence>
+          {showCopiedToast && (
+            <motion.div
+              initial={{ opacity: 0, y: 20, scale: 0.9 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: -20, scale: 0.9 }}
+              className="absolute top-12 left-1/2 -translate-x-1/2 z-50 bg-neutral-900/90 text-white dark:bg-neutral-100 dark:text-black text-xs font-semibold px-4 py-2.5 rounded-full shadow-lg flex items-center gap-2 border border-muted-foreground/10"
+            >
+              <Check className="h-4 w-4 text-green-500" />
+              已复制到系统剪贴板
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
 
       {/* Footer Controls */}
@@ -1798,7 +2052,7 @@ function ReaderView({ book, onBack, updateProgress }: {
               </div>
 
               <div className="pt-4 border-t border-muted-foreground/10 text-center">
-                <p className="text-[10px] font-mono text-muted-foreground opacity-50">悦读 v1.0.0</p>
+                <p className="text-[10px] font-mono text-muted-foreground opacity-50">悦读 v1.0.1</p>
               </div>
             </div>
           </motion.div>
